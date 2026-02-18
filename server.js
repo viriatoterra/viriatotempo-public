@@ -13,6 +13,13 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(compression());
+
+// Servir PWA (archivos estáticos) ANTES de todo — para que fuentes, JS, etc. se sirvan directamente
+const webDist = path.join(__dirname, 'web');
+if (fs.existsSync(webDist)) {
+  app.use(express.static(webDist));
+}
+
 app.use(express.json({ limit: '25mb' }));
 
 // ============ DATA ============
@@ -412,10 +419,8 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Servir PWA (archivos estáticos del frontend web)
-const webDist = path.join(__dirname, 'web');
+// SPA catch-all: rutas que no son API ni archivos estáticos → index.html
 if (fs.existsSync(webDist)) {
-  app.use(express.static(webDist));
   app.get('*', (req, res) => {
     res.sendFile(path.join(webDist, 'index.html'));
   });

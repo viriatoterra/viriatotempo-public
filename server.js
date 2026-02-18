@@ -334,6 +334,7 @@ app.get('/api/public/ranking', (req, res) => {
           key, firstName: p.firstName, lastName: p.lastName, gender: p.gender,
           team: p.team, province: p.province || null,
           totalPoints: 0, totalRaces: 0, totalPodiums: 0, bestPosition: null,
+          results: [],
         };
       }
       if (p.team) participantMap[key].team = p.team;
@@ -387,13 +388,34 @@ app.get('/api/public/ranking', (req, res) => {
       const tier = raceTierMap[fullKey] || 'gold';
       const pts = Math.round(getGoldPoints(pos) * (tierMultiplier[tier] || 1.0));
 
+      // Race detail info
+      let raceDistance = ev.distance;
+      let raceName = null;
+      if (ev.races?.length > 0 && r.raceId) {
+        const race = ev.races.find(rc => rc.id === r.raceId);
+        if (race) { raceDistance = race.distance; raceName = race.name; }
+      }
+
+      const totalInEvent = group.length;
+
       entry.totalPoints += pts;
       entry.totalRaces++;
       if (pos <= 3) entry.totalPodiums++;
       if (!entry.bestPosition || pos < entry.bestPosition) entry.bestPosition = pos;
+      entry.results.push({
+        eventId: r.eventId, eventName: ev.name, raceName,
+        position: pos, time: r.chipTime, points: pts,
+        totalParticipants: totalInEvent, date: ev.date,
+        distance: raceDistance, tier,
+      });
     });
 
     let ranked = Object.values(participantMap).filter(p => p.totalRaces > 0);
+
+    // Sort results by date (most recent first)
+    ranked.forEach(p => {
+      p.results.sort((a, b) => new Date(b.date) - new Date(a.date));
+    });
 
     if (gender === 'male' || gender === 'female') {
       ranked = ranked.filter(p => p.gender === gender);

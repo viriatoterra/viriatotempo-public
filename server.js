@@ -281,8 +281,16 @@ app.get('/api/public/results/:eventId', (req, res) => {
 // GET /api/public/ranking
 app.get('/api/public/ranking', (req, res) => {
   try {
-    const { sport, gender, limit: limitStr } = req.query;
+    const { sport, gender, year, limit: limitStr } = req.query;
+    const yearFilter = year ? parseInt(year) : null;
     const maxResults = Math.min(parseInt(limitStr) || 50, 200);
+
+    // Calcular años disponibles
+    const yearsSet = new Set();
+    events.forEach(evt => {
+      if (evt.date) yearsSet.add(new Date(evt.date).getFullYear());
+    });
+    const availableYears = [...yearsSet].sort((a, b) => b - a);
 
     const tierMultiplier = { gold: 1.0, silver: 0.75, bronze: 0.50 };
     const sportGroupsFilter = sport && sportGroups[sport] ? new Set(sportGroups[sport]) : null;
@@ -291,6 +299,7 @@ app.get('/api/public/ranking', (req, res) => {
     const excludedRaces = new Set();
     events.forEach(evt => {
       if (sportGroupsFilter && !sportGroupsFilter.has(evt.type)) return;
+      if (yearFilter && new Date(evt.date).getFullYear() !== yearFilter) return;
       const hasRaces = evt.races && evt.races.length > 0;
       if (hasRaces) {
         evt.races.forEach(race => {
@@ -336,6 +345,7 @@ app.get('/api/public/ranking', (req, res) => {
       const ev = events.find(e => e.id === r.eventId);
       if (!ev) return false;
       if (sportGroupsFilter && !sportGroupsFilter.has(ev.type)) return false;
+      if (yearFilter && new Date(ev.date).getFullYear() !== yearFilter) return false;
       const raceKey = (ev.races?.length > 0 && r.raceId) ? r.raceId : 'none';
       const fullKey = `${r.eventId}_${raceKey}`;
       return !excludedRaces.has(fullKey) && !!raceTierMap[fullKey];
@@ -403,6 +413,8 @@ app.get('/api/public/ranking', (req, res) => {
       total: ranked.length,
       sportFilter: sport || null,
       genderFilter: gender || null,
+      yearFilter: yearFilter || null,
+      availableYears,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

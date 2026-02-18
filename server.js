@@ -185,7 +185,16 @@ app.get('/api/public/events/:id', (req, res) => {
         minAge: c.minAge,
         maxAge: c.maxAge,
       })),
-      hasGpxTrack: !!event.gpxTrack,
+      gpxTracks: (() => {
+        const tracks = event.gpxTracks || {};
+        if (!event.gpxTracks && event.gpxTrack) {
+          return [{ raceId: '_default', raceName: null }];
+        }
+        return Object.keys(tracks).filter(k => tracks[k]).map(raceId => {
+          const race = (event.races || []).find(r => r.id === raceId);
+          return { raceId, raceName: race ? race.name : null };
+        });
+      })(),
       checkpoints: (event.checkpoints || []).map(c => ({
         lat: c.lat, lon: c.lon, ele: c.ele, km: c.km, name: c.name,
       })),
@@ -197,42 +206,67 @@ app.get('/api/public/events/:id', (req, res) => {
   }
 });
 
-// GET /api/public/events/:id/gpx — GPX track data (parsed points)
-app.get('/api/public/events/:id/gpx', (req, res) => {
-  try {
-    const event = events.find(e => e.id === parseInt(req.params.id));
-    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
-    if (!event.gpxTrack) return res.status(404).json({ message: 'No hay track GPX' });
-
-    const points = [];
-    const gpx = event.gpxTrack;
-    const ptRegex = /<(?:trkpt|rtept)\s+lat="([^"]+)"\s+lon="([^"]+)"[^>]*>([^]*?)<\/(?:trkpt|rtept)>/g;
-    const ptRegex2 = /<(?:trkpt|rtept)\s+lon="([^"]+)"\s+lat="([^"]+)"[^>]*>([^]*?)<\/(?:trkpt|rtept)>/g;
-    let match;
-    while ((match = ptRegex.exec(gpx)) !== null) {
-      const lat = parseFloat(match[1]);
-      const lon = parseFloat(match[2]);
+// Helper: parse GPX XML string into point array
+function parseGpxToPoints(gpx, maxPoints = 1500) {
+  const points = [];
+  const ptRegex = /<(?:trkpt|rtept)\s+lat="([^"]+)"\s+lon="([^"]+)"[^>]*>([^]*?)<\/(?:trkpt|rtept)>/g;
+  const ptRegex2 = /<(?:trkpt|rtept)\s+lon="([^"]+)"\s+lat="([^"]+)"[^>]*>([^]*?)<\/(?:trkpt|rtept)>/g;
+  let match;
+  while ((match = ptRegex.exec(gpx)) !== null) {
+    const lat = parseFloat(match[1]);
+    const lon = parseFloat(match[2]);
+    const eleMatch = match[3].match(/<ele>([^<]+)<\/ele>/);
+    const ele = eleMatch ? parseFloat(eleMatch[1]) : null;
+    if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lon, ele });
+  }
+  if (points.length === 0) {
+    while ((match = ptRegex2.exec(gpx)) !== null) {
+      const lon = parseFloat(match[1]);
+      const lat = parseFloat(match[2]);
       const eleMatch = match[3].match(/<ele>([^<]+)<\/ele>/);
       const ele = eleMatch ? parseFloat(eleMatch[1]) : null;
       if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lon, ele });
     }
-    if (points.length === 0) {
-      while ((match = ptRegex2.exec(gpx)) !== null) {
-        const lon = parseFloat(match[1]);
-        const lat = parseFloat(match[2]);
-        const eleMatch = match[3].match(/<ele>([^<]+)<\/ele>/);
-        const ele = eleMatch ? parseFloat(eleMatch[1]) : null;
-        if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lon, ele });
-      }
+  }
+  let sampled = points;
+  if (points.length > maxPoints) {
+    const every = Math.ceil(points.length / maxPoints);
+    sampled = points.filter((_, i) => i % every === 0 || i === points.length - 1);
+  }
+  return { points: sampled, totalPoints: points.length };
+}
+
+const TRACK_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea'];
+
+// GET /api/public/events/:id/gpx — GPX track data (parsed points, multi-track)
+app.get('/api/public/events/:id/gpx', (req, res) => {
+  try {
+    const event = events.find(e => e.id === parseInt(req.params.id));
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const gpxTracks = event.gpxTracks || (event.gpxTrack ? { _default: event.gpxTrack } : {});
+    const trackKeys = Object.keys(gpxTracks).filter(k => gpxTracks[k]);
+
+    if (trackKeys.length === 0) {
+      return res.status(404).json({ message: 'No hay tracks GPX' });
     }
 
-    let sampled = points;
-    if (points.length > 1500) {
-      const every = Math.ceil(points.length / 1500);
-      sampled = points.filter((_, i) => i % every === 0 || i === points.length - 1);
+    const { raceId } = req.query;
+    if (raceId) {
+      const gpx = gpxTracks[raceId];
+      if (!gpx) return res.status(404).json({ message: 'Track no encontrado para este recorrido' });
+      const parsed = parseGpxToPoints(gpx);
+      const race = (event.races || []).find(r => r.id === raceId);
+      return res.json({ raceId, raceName: race ? race.name : null, color: TRACK_COLORS[0], ...parsed });
     }
 
-    res.json({ points: sampled, totalPoints: points.length });
+    const tracks = trackKeys.map((key, idx) => {
+      const race = (event.races || []).find(r => r.id === key);
+      const parsed = parseGpxToPoints(gpxTracks[key]);
+      return { raceId: key, raceName: race ? race.name : null, color: TRACK_COLORS[idx % TRACK_COLORS.length], ...parsed };
+    });
+
+    res.json({ tracks });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

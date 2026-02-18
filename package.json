@@ -1,0 +1,18 @@
+{
+  "name": "viriatotempo-public-api",
+  "version": "1.0.0",
+  "description": "ViriatoTempo - Public API for mobile app and PWA",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "compression": "^1.7.4"
+  }
+}

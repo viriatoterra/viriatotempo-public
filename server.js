@@ -185,9 +185,54 @@ app.get('/api/public/events/:id', (req, res) => {
         minAge: c.minAge,
         maxAge: c.maxAge,
       })),
+      hasGpxTrack: !!event.gpxTrack,
+      checkpoints: (event.checkpoints || []).map(c => ({
+        lat: c.lat, lon: c.lon, ele: c.ele, km: c.km, name: c.name,
+      })),
       status: new Date(event.date) >= now ? 'upcoming' : 'completed',
       totalParticipants: eventParticipants.length,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/events/:id/gpx — GPX track data (parsed points)
+app.get('/api/public/events/:id/gpx', (req, res) => {
+  try {
+    const event = events.find(e => e.id === parseInt(req.params.id));
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+    if (!event.gpxTrack) return res.status(404).json({ message: 'No hay track GPX' });
+
+    const points = [];
+    const gpx = event.gpxTrack;
+    const ptRegex = /<(?:trkpt|rtept)\s+lat="([^"]+)"\s+lon="([^"]+)"[^>]*>([^]*?)<\/(?:trkpt|rtept)>/g;
+    const ptRegex2 = /<(?:trkpt|rtept)\s+lon="([^"]+)"\s+lat="([^"]+)"[^>]*>([^]*?)<\/(?:trkpt|rtept)>/g;
+    let match;
+    while ((match = ptRegex.exec(gpx)) !== null) {
+      const lat = parseFloat(match[1]);
+      const lon = parseFloat(match[2]);
+      const eleMatch = match[3].match(/<ele>([^<]+)<\/ele>/);
+      const ele = eleMatch ? parseFloat(eleMatch[1]) : null;
+      if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lon, ele });
+    }
+    if (points.length === 0) {
+      while ((match = ptRegex2.exec(gpx)) !== null) {
+        const lon = parseFloat(match[1]);
+        const lat = parseFloat(match[2]);
+        const eleMatch = match[3].match(/<ele>([^<]+)<\/ele>/);
+        const ele = eleMatch ? parseFloat(eleMatch[1]) : null;
+        if (!isNaN(lat) && !isNaN(lon)) points.push({ lat, lon, ele });
+      }
+    }
+
+    let sampled = points;
+    if (points.length > 1500) {
+      const every = Math.ceil(points.length / 1500);
+      sampled = points.filter((_, i) => i % every === 0 || i === points.length - 1);
+    }
+
+    res.json({ points: sampled, totalPoints: points.length });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

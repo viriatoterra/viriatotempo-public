@@ -26,6 +26,7 @@ app.use(express.json({ limit: '25mb' }));
 let events = [];
 let participants = [];
 let results = [];
+let splits = [];
 
 const DATA_FILE = path.join(__dirname, 'data.json');
 
@@ -40,7 +41,8 @@ function loadData() {
     events = data.events || [];
     participants = data.participants || [];
     results = data.results || [];
-    console.log(`📂 Datos cargados: ${events.length} eventos, ${participants.length} participantes, ${results.length} resultados`);
+    splits = data.splits || [];
+    console.log(`📂 Datos cargados: ${events.length} eventos, ${participants.length} participantes, ${results.length} resultados, ${splits.length} splits`);
   } catch (err) {
     console.error('❌ Error cargando data.json:', err.message);
   }
@@ -64,12 +66,13 @@ app.post('/sync', (req, res) => {
     events = data.events;
     participants = data.participants;
     results = data.results;
+    splits = data.splits || [];
 
     // Guardar a disco para persistir entre reinicios de Render
     fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf-8');
 
-    console.log(`🔄 Sync: ${events.length} ev, ${participants.length} part, ${results.length} res`);
-    res.json({ message: 'Datos sincronizados', events: events.length, participants: participants.length, results: results.length });
+    console.log(`🔄 Sync: ${events.length} ev, ${participants.length} part, ${results.length} res, ${splits.length} splits`);
+    res.json({ message: 'Datos sincronizados', events: events.length, participants: participants.length, results: results.length, splits: splits.length });
   } catch (err) {
     res.status(500).json({ message: 'Error sincronizando: ' + err.message });
   }
@@ -352,6 +355,36 @@ app.get('/api/public/results/:eventId', (req, res) => {
       total: enriched.length,
       totalFinished: enriched.filter(r => r.status === 'Finalizado').length,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/splits/:eventId
+app.get('/api/public/splits/:eventId', (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const eventSplits = splits
+      .filter(s => s.eventId === eventId)
+      .sort((a, b) => a.splitIndex - b.splitIndex)
+      .map(s => ({
+        splitIndex: s.splitIndex,
+        name: s.name,
+        data: (s.data || []).map(d => {
+          const p = participants.find(pp => pp.bib === d.bib && pp.eventId === eventId);
+          return {
+            bib: d.bib,
+            time: d.time,
+            cumulative: d.cumulative || d.time,
+            firstName: p?.firstName || null,
+            lastName: p?.lastName || null,
+            category: p?.category || null,
+            team: p?.team || null,
+            gender: p?.gender || null,
+          };
+        })
+      }));
+    res.json(eventSplits);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

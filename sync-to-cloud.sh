@@ -23,7 +23,7 @@ fi
 echo "📤 Sincronizando datos a $REMOTE_URL ..."
 echo "   Archivo: $DATA_FILE ($(du -h "$DATA_FILE" | cut -f1))"
 
-# ── Paso 1: Filtrar campos públicos (sin users, splits, etc.) ──
+# ── Paso 1: Filtrar campos públicos (sin users, ignoredDuplicates) ──
 echo "🔒 Filtrando datos sensibles..."
 if command -v python3 &> /dev/null; then
   python3 -c "
@@ -33,14 +33,15 @@ with open('$DATA_FILE') as f:
 public = {
     'events': data.get('events', []),
     'participants': data.get('participants', []),
-    'results': data.get('results', [])
+    'results': data.get('results', []),
+    'splits': data.get('splits', [])
 }
 with open('$DEPLOY_DATA', 'w') as f:
     json.dump(public, f)
-print(f'   Events: {len(public[\"events\"])}, Participants: {len(public[\"participants\"])}, Results: {len(public[\"results\"])}')
+print(f'   Events: {len(public[\"events\"])}, Participants: {len(public[\"participants\"])}, Results: {len(public[\"results\"])}, Splits: {len(public[\"splits\"])}')
 "
 elif command -v jq &> /dev/null; then
-  jq '{events, participants, results}' "$DATA_FILE" > "$DEPLOY_DATA"
+  jq '{events, participants, results, splits}' "$DATA_FILE" > "$DEPLOY_DATA"
 else
   echo "⚠️ Ni python3 ni jq disponibles — copiando data.json completo"
   cp "$DATA_FILE" "$DEPLOY_DATA"

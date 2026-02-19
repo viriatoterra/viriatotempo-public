@@ -204,6 +204,7 @@ app.get('/api/public/events/:id', (req, res) => {
       })),
       status: new Date(event.date) >= now ? 'upcoming' : 'completed',
       totalParticipants: eventParticipants.length,
+      totalResults: results.filter(r => r.eventId === event.id && r.chipTime).length,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

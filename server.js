@@ -144,6 +144,7 @@ app.get('/api/public/events', (req, res) => {
       })),
       status: new Date(e.date) >= now ? 'upcoming' : 'completed',
       totalParticipants: participants.filter(p => p.eventId === e.id).length,
+      totalResults: results.filter(r => r.eventId === e.id && r.chipTime).length,
     }));
 
     res.json(light);

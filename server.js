@@ -131,6 +131,7 @@ app.get('/api/public/events', (req, res) => {
       type: e.type,
       typeLabel: sportLabel[e.type] || e.type,
       distance: e.distance,
+      elevationGain: e.elevationGain || null,
       description: e.description || '',
       maxParticipants: e.maxParticipants,
       startHour: e.startHour,
@@ -141,6 +142,7 @@ app.get('/api/public/events', (req, res) => {
         id: r.id,
         name: r.name,
         distance: r.distance,
+        elevationGain: r.elevationGain || null,
       })),
       status: new Date(e.date) >= now ? 'upcoming' : 'completed',
       totalParticipants: participants.filter(p => p.eventId === e.id).length,
@@ -170,6 +172,7 @@ app.get('/api/public/events/:id', (req, res) => {
       type: event.type,
       typeLabel: sportLabel[event.type] || event.type,
       distance: event.distance,
+      elevationGain: event.elevationGain || null,
       description: event.description || '',
       maxParticipants: event.maxParticipants,
       startHour: event.startHour,
@@ -182,6 +185,7 @@ app.get('/api/public/events/:id', (req, res) => {
         id: r.id,
         name: r.name,
         distance: r.distance,
+        elevationGain: r.elevationGain || null,
       })),
       categories: (event.categories || []).map(c => ({
         name: c.name,
@@ -555,6 +559,44 @@ app.get('/api/public/ranking', (req, res) => {
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
+});
+
+// Privacy Policy (required for App Store)
+app.get('/privacy', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Política de Privacidad - Viriato Tempo</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #333; line-height: 1.6; }
+  h1 { color: #1a1a2e; }
+  h2 { color: #444; margin-top: 30px; }
+</style>
+</head>
+<body>
+<h1>Política de Privacidad</h1>
+<p><strong>Viriato Tempo</strong> — Última actualización: 1 de marzo de 2026</p>
+
+<h2>1. Información que recopilamos</h2>
+<p>Viriato Tempo no recopila datos personales de los usuarios de la aplicación. La app muestra información pública sobre eventos deportivos, resultados y clasificaciones.</p>
+<p>Los datos de participantes (nombre, dorsal, equipo, categoría, tiempos) son proporcionados por los organizadores de cada evento y son de carácter público, al igual que en cualquier clasificación oficial de una carrera deportiva.</p>
+
+<h2>2. Uso de datos</h2>
+<p>No utilizamos cookies, ni rastreadores, ni herramientas de analítica en la aplicación. No recopilamos información sobre tu dispositivo ni tu ubicación.</p>
+
+<h2>3. Almacenamiento</h2>
+<p>La aplicación no almacena datos personales en tu dispositivo. Toda la información se obtiene en tiempo real del servidor.</p>
+
+<h2>4. Terceros</h2>
+<p>No compartimos ningún dato con terceros. No utilizamos servicios de publicidad ni de analítica de terceros.</p>
+
+<h2>5. Contacto</h2>
+<p>Si tienes preguntas sobre esta política de privacidad, puedes contactarnos en:</p>
+<p>Viriato Terra Eventos Deportivos<br>Email: info@viriatoterra.com</p>
+</body>
+</html>`);
 });
 
 // Health check

@@ -20,7 +20,7 @@ if (fs.existsSync(webDist)) {
   app.use(express.static(webDist));
 }
 
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // ============ DATA ============
 let events = [];

@@ -143,6 +143,7 @@ app.get('/api/public/events', (req, res) => {
         name: r.name,
         distance: r.distance,
         elevationGain: r.elevationGain || null,
+        rankingTier: r.rankingTier || null,
       })),
       status: new Date(e.date) >= now ? 'upcoming' : 'completed',
       totalParticipants: participants.filter(p => p.eventId === e.id).length,
@@ -186,6 +187,7 @@ app.get('/api/public/events/:id', (req, res) => {
         name: r.name,
         distance: r.distance,
         elevationGain: r.elevationGain || null,
+        rankingTier: r.rankingTier || null,
       })),
       categories: (event.categories || []).map(c => ({
         name: c.name,
@@ -340,9 +342,19 @@ app.get('/api/public/results/:eventId', (req, res) => {
     });
 
     let pos = 1;
+    const catCounters = {};
+    const genCounters = {};
     enriched.forEach(r => {
       if (r.status === 'Finalizado') {
         r.position = pos++;
+        if (r.category) {
+          catCounters[r.category] = (catCounters[r.category] || 0) + 1;
+          r.categoryPosition = catCounters[r.category];
+        }
+        if (r.gender) {
+          genCounters[r.gender] = (genCounters[r.gender] || 0) + 1;
+          r.genderPosition = genCounters[r.gender];
+        }
       } else {
         r.position = null;
       }
@@ -597,6 +609,364 @@ app.get('/privacy', (req, res) => {
 <p>Viriato Terra Eventos Deportivos<br>Email: info@viriatoterra.com</p>
 </body>
 </html>`);
+});
+
+// POST /api/public/lookup — Consulta de dorsal por DNI
+app.post('/api/public/lookup', (req, res) => {
+  try {
+    const { eventId, dni } = req.body;
+    if (!eventId || !dni) return res.status(400).json({ message: 'eventId y dni requeridos' });
+
+    const event = events.find(e => e.id === parseInt(eventId));
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const normalDni = dni.toString().toUpperCase().replace(/[\s\-\.]/g, '');
+    const match = participants.find(p =>
+      p.eventId === parseInt(eventId) &&
+      p.dni && p.dni.toUpperCase().replace(/[\s\-\.]/g, '') === normalDni
+    );
+
+    if (!match) {
+      return res.status(404).json({ message: 'No se encontró ningún inscrito con ese documento' });
+    }
+
+    const race = match.raceId
+      ? (event.races || []).find(r => String(r.id) === String(match.raceId))
+      : null;
+
+    res.json({
+      found: true,
+      bib: match.bib || null,
+      firstName: match.firstName,
+      lastName: match.lastName,
+      category: match.category || null,
+      team: match.team || null,
+      race: race ? race.name : null,
+      talla: match.talla || null,
+      gender: match.gender || null,
+      province: match.province || null,
+      event: { id: event.id, name: event.name, date: event.date },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/participants/:eventId — Lista de inscritos
+app.get('/api/public/participants/:eventId', (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const { raceId } = req.query;
+    let eventParticipants = participants.filter(p => p.eventId === eventId);
+    if (raceId) {
+      eventParticipants = eventParticipants.filter(p => String(p.raceId) === String(raceId));
+    }
+
+    eventParticipants.sort((a, b) => {
+      const aBib = parseInt(a.bib) || 99999;
+      const bBib = parseInt(b.bib) || 99999;
+      if (aBib !== bBib) return aBib - bBib;
+      return (a.lastName || '').localeCompare(b.lastName || '');
+    });
+
+    const mapped = eventParticipants.map(p => ({
+      id: p.id,
+      bib: p.bib || null,
+      firstName: p.firstName,
+      lastName: p.lastName,
+      gender: p.gender || null,
+      team: p.team || null,
+      category: p.category || null,
+      province: p.province || null,
+      locality: p.locality || null,
+      raceId: p.raceId || null,
+    }));
+
+    res.json({
+      event: {
+        id: event.id, name: event.name, date: event.date,
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+      },
+      participants: mapped,
+      total: mapped.length,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/results/:eventId/team-classification — Clasificación por equipos
+// IMPORTANT: Must be BEFORE /:eventId/:bib to avoid being caught by the :bib param
+app.get('/api/public/results/:eventId/team-classification', (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const { raceId, mode, method: methodParam } = req.query;
+    const scoringMembers = parseInt(req.query.scoringMembers) || 3;
+    const method = methodParam || 'positions';
+    const genderMode = mode || 'mixed';
+
+    const timeToMs2 = (t) => {
+      if (!t) return Infinity;
+      const parts = t.split(':');
+      const secParts = (parts[2] || '0').split('.');
+      return ((parseInt(parts[0]) * 3600) + (parseInt(parts[1]) * 60) + parseInt(secParts[0])) * 1000
+        + (parseInt(secParts[1] || '0'));
+    };
+
+    const msToTimeString = (ms) => {
+      if (!ms || ms <= 0) return '00:00:00';
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
+    let eventResults = results.filter(r => r.eventId === eventId && r.chipTime);
+    if (raceId) eventResults = eventResults.filter(r => r.raceId === raceId);
+
+    let resultsWithParticipants = eventResults.map(r => {
+      const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
+      return p ? { ...r, participant: p } : null;
+    }).filter(Boolean).sort((a, b) => a.position - b.position);
+
+    if (genderMode === 'male') {
+      resultsWithParticipants = resultsWithParticipants.filter(r => r.participant.gender === 'male');
+    } else if (genderMode === 'female') {
+      resultsWithParticipants = resultsWithParticipants.filter(r => r.participant.gender === 'female');
+    }
+
+    resultsWithParticipants.forEach((r, i) => { r.genderPosition = i + 1; });
+
+    const teamMap = {};
+    resultsWithParticipants.forEach(r => {
+      const teamName = r.participant.team;
+      if (!teamName) return;
+      if (teamName.toUpperCase().includes('INDEPENDIENTE')) return;
+      if (teamName.toUpperCase() === 'INDIVIDUAL') return;
+      if (!teamMap[teamName]) teamMap[teamName] = [];
+      teamMap[teamName].push({
+        bib: r.bib,
+        firstName: r.participant.firstName,
+        lastName: r.participant.lastName,
+        gender: r.participant.gender,
+        category: r.participant.category,
+        position: r.genderPosition,
+        chipTime: r.chipTime,
+        time: r.time || r.chipTime,
+      });
+    });
+
+    const teams = [];
+    Object.entries(teamMap).forEach(([teamName, members]) => {
+      members.sort((a, b) => a.position - b.position);
+      if (method === 'finishers') {
+        teams.push({ team: teamName, score: members.length, scoringMembers: members, totalMembers: members.length, allMembers: members });
+      } else {
+        if (members.length < scoringMembers) return;
+        const scoringList = members.slice(0, scoringMembers);
+        let score;
+        if (method === 'times') {
+          score = scoringList.reduce((sum, m) => sum + timeToMs2(m.time || m.chipTime || '99:99:99.999'), 0);
+        } else {
+          score = scoringList.reduce((sum, m) => sum + m.position, 0);
+        }
+        teams.push({ team: teamName, score, scoringMembers: scoringList, totalMembers: members.length, allMembers: members });
+      }
+    });
+
+    if (method === 'finishers') {
+      teams.sort((a, b) => b.score - a.score);
+    } else {
+      teams.sort((a, b) => a.score - b.score);
+    }
+
+    teams.forEach((t, i) => {
+      t.position = i + 1;
+      if (method === 'times') t.scoreFormatted = msToTimeString(t.score);
+      else if (method === 'finishers') t.scoreFormatted = String(t.score) + ' fin.';
+      else t.scoreFormatted = String(t.score) + ' pts';
+    });
+
+    res.json({
+      teams,
+      config: { scoringMembers, mode: genderMode, method },
+      eventName: event.name,
+      totalTeams: teams.length,
+      races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/results/:eventId/:bib — Detalle de un corredor
+app.get('/api/public/results/:eventId/:bib', (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const bib = req.params.bib;
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const participant = participants.find(p => p.bib === bib && p.eventId === eventId);
+    if (!participant) return res.status(404).json({ message: 'Participante no encontrado' });
+
+    const result = results.find(r => r.bib === bib && r.eventId === eventId);
+
+    // Buscar splits de este corredor
+    const runnerSplits = splits
+      .filter(s => s.eventId === eventId)
+      .sort((a, b) => a.splitIndex - b.splitIndex)
+      .map(s => {
+        const entry = (s.data || []).find(d => d.bib === bib);
+        return {
+          splitIndex: s.splitIndex,
+          name: s.name || `Punto ${s.splitIndex + 1}`,
+          time: entry ? entry.time : null,
+        };
+      })
+      .filter(s => s.time);
+
+    const status = !result ? 'DNS'
+      : !result.chipTime && !result.startTime ? 'DNS'
+      : !result.chipTime ? 'DNF'
+      : 'Finalizado';
+
+    // Calcular posiciones por categoría y género
+    let categoryPosition = null;
+    let genderPosition = null;
+    if (result && result.chipTime) {
+      const timeToMs3 = (t) => {
+        if (!t) return Infinity;
+        const parts = t.split(':');
+        const secParts = (parts[2] || '0').split('.');
+        return ((parseInt(parts[0]) * 3600) + (parseInt(parts[1]) * 60) + parseInt(secParts[0])) * 1000 + (parseInt(secParts[1] || '0'));
+      };
+      let raceResults = results.filter(r => r.eventId === eventId && r.chipTime && !r.isOTL);
+      if (result.raceId) raceResults = raceResults.filter(r => r.raceId === result.raceId);
+
+      const enrichedAll = raceResults.map(r => {
+        const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
+        return p ? { bib: r.bib, chipTime: r.chipTime, penalty: r.penalty, gender: p.gender, category: p.category } : null;
+      }).filter(Boolean).sort((a, b) => {
+        const aT = timeToMs3(a.chipTime) + (a.penalty ? timeToMs3(a.penalty) : 0);
+        const bT = timeToMs3(b.chipTime) + (b.penalty ? timeToMs3(b.penalty) : 0);
+        return aT - bT;
+      });
+
+      if (participant.category) {
+        const catResults = enrichedAll.filter(r => r.category === participant.category);
+        const catIdx = catResults.findIndex(r => r.bib === bib);
+        if (catIdx >= 0) categoryPosition = catIdx + 1;
+      }
+      if (participant.gender) {
+        const genResults = enrichedAll.filter(r => r.gender === participant.gender);
+        const genIdx = genResults.findIndex(r => r.bib === bib);
+        if (genIdx >= 0) genderPosition = genIdx + 1;
+      }
+    }
+
+    res.json({
+      bib: participant.bib,
+      firstName: participant.firstName,
+      lastName: participant.lastName,
+      gender: participant.gender,
+      team: participant.team || null,
+      category: participant.category || null,
+      province: participant.province || null,
+      city: participant.city || null,
+      isLocal: participant.isLocal || false,
+      chipTime: result?.chipTime || null,
+      netTime: result?.netTime || null,
+      startTime: result?.startTime || null,
+      position: result?.position || null,
+      categoryPosition,
+      genderPosition,
+      penalty: result?.penalty || null,
+      penaltyReason: result?.penaltyReason || null,
+      status,
+      splits: runnerSplits,
+      event: {
+        id: event.id,
+        name: event.name,
+        distance: event.distance,
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/podiums/:eventId — Podios públicos
+app.get('/api/public/podiums/:eventId', (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const { raceId } = req.query;
+    const topN = Math.min(parseInt(req.query.topN) || 3, 10);
+    const cumulative = req.query.cumulative === 'true';
+
+    let eventResults = results.filter(r => r.eventId === eventId && r.chipTime);
+    if (raceId) eventResults = eventResults.filter(r => r.raceId === raceId);
+
+    let resultsWithParticipants = eventResults.map(r => {
+      const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
+      return { ...r, participant: p || null };
+    }).filter(r => r.participant).sort((a, b) => a.position - b.position);
+
+    const mapPodiumEntry = (r, i) => ({
+      position: i + 1,
+      bib: r.bib,
+      firstName: r.participant.firstName,
+      lastName: r.participant.lastName,
+      team: r.participant.team,
+      category: r.participant.category,
+      gender: r.participant.gender,
+      time: (r.chipTime || r.time).split('.')[0],
+      province: r.participant.province,
+    });
+
+    const maleResults = resultsWithParticipants.filter(r => r.participant.gender === 'male');
+    const generalMale = maleResults.slice(0, topN).map(mapPodiumEntry);
+
+    const femaleResults = resultsWithParticipants.filter(r => r.participant.gender === 'female');
+    const generalFemale = femaleResults.slice(0, topN).map(mapPodiumEntry);
+
+    const generalMaleBibs = new Set(generalMale.map(r => r.bib));
+    const generalFemaleBibs = new Set(generalFemale.map(r => r.bib));
+
+    const categories = {};
+    const allCategories = [...new Set(resultsWithParticipants.map(r => r.participant.category).filter(Boolean))].sort();
+
+    allCategories.forEach(cat => {
+      let catResults = resultsWithParticipants.filter(r => r.participant.category === cat);
+      if (!cumulative) {
+        catResults = catResults.filter(r => !generalMaleBibs.has(r.bib) && !generalFemaleBibs.has(r.bib));
+      }
+      categories[cat] = catResults.slice(0, topN).map(mapPodiumEntry);
+    });
+
+    res.json({
+      generalMale,
+      generalFemale,
+      categories,
+      settings: { topN, cumulative },
+      event: {
+        id: event.id, name: event.name,
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Health check

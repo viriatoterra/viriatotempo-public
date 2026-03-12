@@ -367,7 +367,7 @@ app.get('/api/public/results/:eventId', (req, res) => {
         date: event.date,
         type: event.type,
         distance: event.distance,
-        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, rankingTier: r.rankingTier || null })),
       },
       results: enriched,
       total: enriched.length,

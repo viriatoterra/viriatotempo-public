@@ -830,6 +830,7 @@ app.get('/api/public/results/:eventId/:bib', (req, res) => {
           splitIndex: s.splitIndex,
           name: s.name || `Punto ${s.splitIndex + 1}`,
           time: entry ? entry.time : null,
+          cumulative: entry ? (entry.cumulative || entry.time) : null,
         };
       })
       .filter(s => s.time);

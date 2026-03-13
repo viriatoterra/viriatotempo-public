@@ -365,8 +365,10 @@ app.get('/api/public/results/:eventId', (req, res) => {
         id: event.id,
         name: event.name,
         date: event.date,
+        location: event.location,
         type: event.type,
         distance: event.distance,
+        image: event.image || null,
         races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, rankingTier: r.rankingTier || null })),
       },
       results: enriched,
@@ -895,6 +897,7 @@ app.get('/api/public/results/:eventId/:bib', (req, res) => {
         id: event.id,
         name: event.name,
         distance: event.distance,
+        image: event.image || null,
         races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
       }
     });
@@ -960,7 +963,7 @@ app.get('/api/public/podiums/:eventId', (req, res) => {
       categories,
       settings: { topN, cumulative },
       event: {
-        id: event.id, name: event.name,
+        id: event.id, name: event.name, image: event.image || null,
         races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
       },
     });

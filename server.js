@@ -368,8 +368,9 @@ app.get('/api/public/results/:eventId', (req, res) => {
         location: event.location,
         type: event.type,
         distance: event.distance,
+        elevationGain: event.elevationGain || null,
         image: event.image || null,
-        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, rankingTier: r.rankingTier || null })),
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, elevationGain: r.elevationGain || null, rankingTier: r.rankingTier || null })),
       },
       results: enriched,
       total: enriched.length,
@@ -898,8 +899,9 @@ app.get('/api/public/results/:eventId/:bib', (req, res) => {
         id: event.id,
         name: event.name,
         distance: event.distance,
+        elevationGain: event.elevationGain || null,
         image: event.image || null,
-        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, elevationGain: r.elevationGain || null })),
       }
     });
   } catch (error) {

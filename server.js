@@ -980,7 +980,7 @@ app.get('/health', (req, res) => {
 });
 
 // Image proxy — para compartir en redes (evita CORS con imágenes externas)
-app.get('/api/proxy-image', async (req, res) => {
+app.get('/api/public/proxy-image', async (req, res) => {
   try {
     const imageUrl = req.query.url;
     if (!imageUrl) return res.status(400).json({ error: 'Missing url parameter' });

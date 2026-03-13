@@ -979,6 +979,43 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Image proxy — para compartir en redes (evita CORS con imágenes externas)
+app.get('/api/proxy-image', async (req, res) => {
+  try {
+    const imageUrl = req.query.url;
+    if (!imageUrl) return res.status(400).json({ error: 'Missing url parameter' });
+
+    // Validar que sea una URL http/https
+    if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+      return res.status(400).json({ error: 'Invalid URL' });
+    }
+
+    const response = await fetch(imageUrl, {
+      headers: { 'User-Agent': 'ViriatoTempo/1.0' },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Failed to fetch image' });
+    }
+
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    // Solo permitir imágenes
+    if (!contentType.startsWith('image/')) {
+      return res.status(400).json({ error: 'URL is not an image' });
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.send(buffer);
+  } catch (error) {
+    console.error('Proxy image error:', error.message);
+    res.status(500).json({ error: 'Failed to proxy image' });
+  }
+});
+
 // SPA catch-all: rutas que no son API ni archivos estáticos → index.html
 if (fs.existsSync(webDist)) {
   app.get('*', (req, res) => {

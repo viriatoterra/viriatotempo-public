@@ -196,8 +196,9 @@ app.get('/api/public/events/:id', (req, res) => {
         maxAge: c.maxAge,
       })),
       gpxTracks: (() => {
-        const tracks = event.gpxTracks || {};
-        if (!event.gpxTracks && event.gpxTrack) {
+        const hasGpxTracks = event.gpxTracks && Object.keys(event.gpxTracks).length > 0;
+        const tracks = hasGpxTracks ? event.gpxTracks : {};
+        if (!hasGpxTracks && event.gpxTrack) {
           return [{ raceId: '_default', raceName: null }];
         }
         return Object.keys(tracks).filter(k => tracks[k]).map(raceId => {
@@ -255,7 +256,9 @@ app.get('/api/public/events/:id/gpx', (req, res) => {
     const event = events.find(e => e.id === parseInt(req.params.id));
     if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
 
-    const gpxTracks = event.gpxTracks || (event.gpxTrack ? { _default: event.gpxTrack } : {});
+    const gpxTracks = (event.gpxTracks && Object.keys(event.gpxTracks).length > 0)
+      ? event.gpxTracks
+      : (event.gpxTrack ? { _default: event.gpxTrack } : {});
     const trackKeys = Object.keys(gpxTracks).filter(k => gpxTracks[k]);
 
     if (trackKeys.length === 0) {

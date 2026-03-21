@@ -388,6 +388,14 @@ app.get('/api/public/results/:eventId', (req, res) => {
 app.get('/api/public/splits/:eventId', (req, res) => {
   try {
     const eventId = parseInt(req.params.eventId);
+    const event = events.find(e => e.id === eventId);
+    const hasRaces = event?.races?.length > 0;
+    const raceOffsetMap = {};
+    if (hasRaces) {
+      event.races.forEach(race => {
+        raceOffsetMap[race.id] = (race.startOffset || 0) * 1000;
+      });
+    }
     const eventSplits = splits
       .filter(s => s.eventId === eventId)
       .sort((a, b) => a.splitIndex - b.splitIndex)
@@ -396,10 +404,19 @@ app.get('/api/public/splits/:eventId', (req, res) => {
         name: s.name,
         data: (s.data || []).map(d => {
           const p = participants.find(pp => pp.bib === d.bib && pp.eventId === eventId);
+          const offsetMs = (p?.raceId && raceOffsetMap[p.raceId]) ? raceOffsetMap[p.raceId] : 0;
+          const adjustTime = (t) => {
+            if (!t || offsetMs <= 0) return t;
+            const parts = t.split(':');
+            const ms = (parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2])) * 1000;
+            const net = Math.max(0, ms - offsetMs);
+            const h = Math.floor(net / 3600000); const m = Math.floor((net % 3600000) / 60000); const s2 = ((net % 60000) / 1000).toFixed(3);
+            return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${s2.padStart(6,'0')}`;
+          };
           return {
             bib: d.bib,
-            time: d.time,
-            cumulative: d.cumulative || d.time,
+            time: adjustTime(d.time),
+            cumulative: adjustTime(d.cumulative || d.time),
             firstName: p?.firstName || null,
             lastName: p?.lastName || null,
             category: p?.category || null,
@@ -824,7 +841,21 @@ app.get('/api/public/results/:eventId/:bib', (req, res) => {
 
     const result = results.find(r => r.bib === bib && r.eventId === eventId);
 
-    // Buscar splits de este corredor
+    // Buscar splits de este corredor (aplicando startOffset de la carrera)
+    const hasRacesDet = event?.races?.length > 0;
+    const raceOffsetMapDet = {};
+    if (hasRacesDet) {
+      event.races.forEach(race => { raceOffsetMapDet[race.id] = (race.startOffset || 0) * 1000; });
+    }
+    const pOffsetMs = (participant.raceId && raceOffsetMapDet[participant.raceId]) ? raceOffsetMapDet[participant.raceId] : 0;
+    const adjTime = (t) => {
+      if (!t || pOffsetMs <= 0) return t;
+      const parts = t.split(':');
+      const ms = (parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2])) * 1000;
+      const net = Math.max(0, ms - pOffsetMs);
+      const h = Math.floor(net / 3600000); const m = Math.floor((net % 3600000) / 60000); const s2 = ((net % 60000) / 1000).toFixed(3);
+      return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${s2.padStart(6,'0')}`;
+    };
     const runnerSplits = splits
       .filter(s => s.eventId === eventId)
       .sort((a, b) => a.splitIndex - b.splitIndex)
@@ -833,8 +864,8 @@ app.get('/api/public/results/:eventId/:bib', (req, res) => {
         return {
           splitIndex: s.splitIndex,
           name: s.name || `Punto ${s.splitIndex + 1}`,
-          time: entry ? entry.time : null,
-          cumulative: entry ? (entry.cumulative || entry.time) : null,
+          time: entry ? adjTime(entry.time) : null,
+          cumulative: entry ? adjTime(entry.cumulative || entry.time) : null,
         };
       })
       .filter(s => s.time);

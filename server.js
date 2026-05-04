@@ -27,6 +27,7 @@ let events = [];
 let participants = [];
 let results = [];
 let splits = [];
+let laps = [];
 
 const DATA_FILE = path.join(__dirname, 'data.json');
 
@@ -42,7 +43,8 @@ function loadData() {
     participants = data.participants || [];
     results = data.results || [];
     splits = data.splits || [];
-    console.log(`📂 Datos cargados: ${events.length} eventos, ${participants.length} participantes, ${results.length} resultados, ${splits.length} splits`);
+    laps = data.laps || [];
+    console.log(`📂 Datos cargados: ${events.length} eventos, ${participants.length} participantes, ${results.length} resultados, ${splits.length} splits, ${laps.length} laps`);
   } catch (err) {
     console.error('❌ Error cargando data.json:', err.message);
   }
@@ -67,12 +69,13 @@ app.post('/sync', (req, res) => {
     participants = data.participants;
     results = data.results;
     splits = data.splits || [];
+    laps = data.laps || [];
 
     // Guardar a disco para persistir entre reinicios de Render
     fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf-8');
 
-    console.log(`🔄 Sync: ${events.length} ev, ${participants.length} part, ${results.length} res, ${splits.length} splits`);
-    res.json({ message: 'Datos sincronizados', events: events.length, participants: participants.length, results: results.length, splits: splits.length });
+    console.log(`🔄 Sync: ${events.length} ev, ${participants.length} part, ${results.length} res, ${splits.length} splits, ${laps.length} laps`);
+    res.json({ message: 'Datos sincronizados', events: events.length, participants: participants.length, results: results.length, splits: splits.length, laps: laps.length });
   } catch (err) {
     res.status(500).json({ message: 'Error sincronizando: ' + err.message });
   }
@@ -286,6 +289,33 @@ app.get('/api/public/events/:id/gpx', (req, res) => {
   }
 });
 
+// Helper compartido: parsear HH:MM:SS.mmm → ms
+function timeToMsHelper(t) {
+  if (!t) return Infinity;
+  const parts = t.split(':');
+  if (parts.length < 3) return Infinity;
+  const secParts = (parts[2] || '0').split('.');
+  return ((parseInt(parts[0]) * 3600) + (parseInt(parts[1]) * 60) + parseInt(secParts[0])) * 1000 + (parseInt(secParts[1] || '0'));
+}
+
+// Helper compartido: ms → HH:MM:SS.mmm
+function msToTimeHelper(ms) {
+  if (ms === Infinity || ms < 0) return null;
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const mm = ms % 1000;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(mm).padStart(3, '0')}`;
+}
+
+// Helper: aplicar offset a un tiempo dado los segundos de retraso
+function applyOffsetToTime(timeStr, offsetSeconds) {
+  if (!timeStr || !offsetSeconds || offsetSeconds === 0) return timeStr;
+  const ms = timeToMsHelper(timeStr);
+  if (ms === Infinity) return timeStr;
+  return msToTimeHelper(Math.max(0, ms - offsetSeconds * 1000));
+}
+
 // GET /api/public/results/:eventId
 app.get('/api/public/results/:eventId', (req, res) => {
   try {
@@ -303,6 +333,13 @@ app.get('/api/public/results/:eventId', (req, res) => {
     let enriched = eventResults.map(r => {
       const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
       if (!p) return null;
+      const rId = r.raceId || p.raceId || null;
+      const race = rId ? (event.races || []).find(rr => rr.id === rId) : null;
+      // Calcular tiempo oficial: r.time si lo trae, si no chipTime - offset
+      let officialTime = r.time || null;
+      if (!officialTime && r.chipTime) {
+        officialTime = applyOffsetToTime(r.chipTime, race?.startOffset || 0);
+      }
       return {
         bib: r.bib,
         firstName: p.firstName,
@@ -312,8 +349,11 @@ app.get('/api/public/results/:eventId', (req, res) => {
         category: p.category || null,
         province: p.province || null,
         isLocal: p.isLocal || false,
-        chipTime: r.time || r.chipTime || null,
-        netTime: r.time || r.chipTime || null,
+        raceId: rId,
+        raceName: race?.name || null,
+        chipTime: officialTime,           // Lo que ven corredores (ya con offset)
+        chipTimeRaw: r.chipTime || null,   // Tiempo bruto desde inicio del evento
+        netTime: officialTime,
         position: r.position || null,
         categoryPosition: r.categoryPosition || null,
         genderPosition: r.genderPosition || null,
@@ -841,71 +881,150 @@ app.get('/api/public/results/:eventId/:bib', (req, res) => {
 
     const result = results.find(r => r.bib === bib && r.eventId === eventId);
 
-    // Buscar splits de este corredor (aplicando startOffset de la carrera)
-    const hasRacesDet = event?.races?.length > 0;
-    const raceOffsetMapDet = {};
-    if (hasRacesDet) {
-      event.races.forEach(race => { raceOffsetMapDet[race.id] = (race.startOffset || 0) * 1000; });
-    }
-    const pOffsetMs = (participant.raceId && raceOffsetMapDet[participant.raceId]) ? raceOffsetMapDet[participant.raceId] : 0;
-    const adjTime = (t) => {
-      if (!t || pOffsetMs <= 0) return t;
-      const parts = t.split(':');
-      const ms = (parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2])) * 1000;
-      const net = Math.max(0, ms - pOffsetMs);
-      const h = Math.floor(net / 3600000); const m = Math.floor((net % 3600000) / 60000); const s2 = ((net % 60000) / 1000).toFixed(3);
-      return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${s2.padStart(6,'0')}`;
+    // Carrera del corredor + offset
+    const race = (event.races || []).find(r => r.id === (result?.raceId || participant.raceId));
+    const raceDistance = race?.distance || event.distance || 0;
+    const raceOffsetMs = (race?.startOffset || 0) * 1000;
+    const applyOffsetMs = (timeStr) => {
+      if (!timeStr) return null;
+      if (raceOffsetMs === 0) return timeStr;
+      const ms = timeToMsHelper(timeStr);
+      if (ms === Infinity) return timeStr;
+      return msToTimeHelper(Math.max(0, ms - raceOffsetMs));
     };
-    const runnerSplits = splits
-      .filter(s => s.eventId === eventId)
-      .sort((a, b) => a.splitIndex - b.splitIndex)
-      .map(s => {
-        const entry = (s.data || []).find(d => d.bib === bib);
-        return {
-          splitIndex: s.splitIndex,
-          name: s.name || `Punto ${s.splitIndex + 1}`,
-          time: entry ? adjTime(entry.time) : null,
-          cumulative: entry ? adjTime(entry.cumulative || entry.time) : null,
-        };
-      })
-      .filter(s => s.time);
 
     const status = !result ? 'DNS'
       : !result.chipTime && !result.startTime ? 'DNS'
       : !result.chipTime ? 'DNF'
       : 'Finalizado';
 
-    // Calcular posiciones por categoría y género
+    // === Posiciones general/categoría/género + totales ===
     let categoryPosition = null;
     let genderPosition = null;
-    if (result && result.chipTime) {
-      const timeToMs3 = (t) => {
-        if (!t) return Infinity;
-        const parts = t.split(':');
-        const secParts = (parts[2] || '0').split('.');
-        return ((parseInt(parts[0]) * 3600) + (parseInt(parts[1]) * 60) + parseInt(secParts[0])) * 1000 + (parseInt(secParts[1] || '0'));
-      };
-      let raceResults = results.filter(r => r.eventId === eventId && r.chipTime && !r.isOTL);
-      if (result.raceId) raceResults = raceResults.filter(r => r.raceId === result.raceId);
+    let totalFinishers = 0;
+    let totalCategory = 0;
+    let totalGender = 0;
 
-      const enrichedAll = raceResults.map(r => {
-        const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
-        return p ? { bib: r.bib, chipTime: r.chipTime, penalty: r.penalty, gender: p.gender, category: p.category } : null;
-      }).filter(Boolean).sort((a, b) => {
-        const aT = timeToMs3(a.chipTime) + (a.penalty ? timeToMs3(a.penalty) : 0);
-        const bT = timeToMs3(b.chipTime) + (b.penalty ? timeToMs3(b.penalty) : 0);
-        return aT - bT;
-      });
+    let raceResults = results.filter(r => r.eventId === eventId && r.chipTime && !r.isOTL);
+    if (result?.raceId) raceResults = raceResults.filter(r => r.raceId === result.raceId);
+    else if (participant.raceId) raceResults = raceResults.filter(r => r.raceId === participant.raceId);
 
-      if (participant.category) {
-        const catResults = enrichedAll.filter(r => r.category === participant.category);
-        const catIdx = catResults.findIndex(r => r.bib === bib);
-        if (catIdx >= 0) categoryPosition = catIdx + 1;
+    const enrichedAll = raceResults.map(r => {
+      const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
+      return p ? { bib: r.bib, chipTime: r.chipTime, penalty: r.penalty, gender: p.gender, category: p.category } : null;
+    }).filter(Boolean).sort((a, b) => {
+      const aT = timeToMsHelper(a.chipTime) + (a.penalty ? timeToMsHelper(a.penalty) : 0);
+      const bT = timeToMsHelper(b.chipTime) + (b.penalty ? timeToMsHelper(b.penalty) : 0);
+      return aT - bT;
+    });
+
+    totalFinishers = enrichedAll.length;
+    if (participant.category) {
+      const catResults = enrichedAll.filter(r => r.category === participant.category);
+      totalCategory = catResults.length;
+      const catIdx = catResults.findIndex(r => r.bib === bib);
+      if (catIdx >= 0) categoryPosition = catIdx + 1;
+    }
+    if (participant.gender) {
+      const genResults = enrichedAll.filter(r => r.gender === participant.gender);
+      totalGender = genResults.length;
+      const genIdx = genResults.findIndex(r => r.bib === bib);
+      if (genIdx >= 0) genderPosition = genIdx + 1;
+    }
+
+    // === Splits con posición por punto y offset aplicado ===
+    const eventSplits = splits.filter(s => s.eventId === eventId).sort((a, b) => a.splitIndex - b.splitIndex);
+    const runnerSplits = eventSplits.map(s => {
+      const entry = (s.data || []).find(d => d.bib === bib);
+      if (!entry || !entry.time) return null;
+
+      const myCumRaw = entry.cumulative || entry.time;
+      const myCum = applyOffsetMs(myCumRaw);
+      const myCumMs = timeToMsHelper(myCum);
+
+      // Posiciones en este split — comparar entre corredores de la misma carrera
+      const splitData = (s.data || []).filter(d => d.bib && d.time)
+        .map(d => {
+          const p = participants.find(pp => pp.bib === d.bib && pp.eventId === eventId);
+          if (!p) return null;
+          const otherRaceId = p.raceId || null;
+          if (result?.raceId && otherRaceId && otherRaceId !== result.raceId) return null;
+          const otherRace = otherRaceId ? (event.races || []).find(rr => rr.id === otherRaceId) : null;
+          const otherOffsetMs = (otherRace?.startOffset || 0) * 1000;
+          const rawMs = timeToMsHelper(d.cumulative || d.time);
+          const adjustedMs = rawMs === Infinity ? Infinity : Math.max(0, rawMs - otherOffsetMs);
+          return { bib: d.bib, cumMs: adjustedMs, gender: p.gender, category: p.category };
+        }).filter(Boolean).sort((a, b) => a.cumMs - b.cumMs);
+
+      const overallIdx = splitData.findIndex(d => d.bib === bib);
+      const catData = splitData.filter(d => d.category === participant.category);
+      const catIdx = catData.findIndex(d => d.bib === bib);
+      const genData = splitData.filter(d => d.gender === participant.gender);
+      const genIdx = genData.findIndex(d => d.bib === bib);
+
+      const splitDist = event.splitDistances?.[s.splitIndex]?.km || (
+        eventSplits.length > 0 && raceDistance > 0
+          ? Math.round((raceDistance * (s.splitIndex + 1) / (eventSplits.length + 1)) * 10) / 10
+          : null
+      );
+
+      let paceStr = null;
+      if (splitDist && myCumMs > 0 && myCumMs !== Infinity) {
+        const paceSec = (myCumMs / 1000) / splitDist;
+        const m = Math.floor(paceSec / 60);
+        const s2 = Math.round(paceSec % 60);
+        paceStr = `${m}:${String(s2).padStart(2, '0')}`;
       }
-      if (participant.gender) {
-        const genResults = enrichedAll.filter(r => r.gender === participant.gender);
-        const genIdx = genResults.findIndex(r => r.bib === bib);
-        if (genIdx >= 0) genderPosition = genIdx + 1;
+
+      return {
+        splitIndex: s.splitIndex,
+        name: s.name || `Punto ${s.splitIndex + 1}`,
+        distance: splitDist,
+        time: entry.time,
+        cumulative: myCum,
+        cumulativeRaw: myCumRaw,
+        pace: paceStr,
+        positionOverall: overallIdx >= 0 ? overallIdx + 1 : null,
+        positionCategory: catIdx >= 0 ? catIdx + 1 : null,
+        positionGender: genIdx >= 0 ? genIdx + 1 : null,
+      };
+    }).filter(Boolean);
+
+    // === Vueltas (laps) del corredor con offset aplicado ===
+    const eventLaps = laps.filter(l => l.eventId === eventId).sort((a, b) => a.lapNumber - b.lapNumber);
+    const runnerLaps = [];
+    let prevCumMs = 0;
+    for (const lap of eventLaps) {
+      const entry = (lap.data || []).find(d => String(d.bib) === String(bib));
+      if (!entry || !entry.time) continue;
+      const rawCumMs = timeToMsHelper(entry.time);
+      const adjustedCumMs = Math.max(0, rawCumMs - raceOffsetMs);
+      const lapTimeMs = prevCumMs > 0 ? Math.max(0, adjustedCumMs - prevCumMs) : adjustedCumMs;
+      runnerLaps.push({
+        lapNumber: lap.lapNumber,
+        cumulative: msToTimeHelper(adjustedCumMs),
+        lapTime: msToTimeHelper(lapTimeMs),
+        cumulativeRaw: entry.time,
+      });
+      prevCumMs = adjustedCumMs;
+    }
+
+    // === Tiempo neto y oficial ===
+    const officialTime = result?.time || applyOffsetMs(result?.chipTime) || null;
+    const netTime = officialTime;
+
+    // === Pace global y velocidad ===
+    let globalPace = null;
+    let speedKmh = null;
+    if (officialTime && raceDistance > 0) {
+      const ms = timeToMsHelper(officialTime);
+      if (ms > 0 && ms !== Infinity) {
+        const totalSec = ms / 1000;
+        const paceSec = totalSec / raceDistance;
+        const m = Math.floor(paceSec / 60);
+        const s2 = Math.round(paceSec % 60);
+        globalPace = `${m}:${String(s2).padStart(2, '0')}`;
+        speedKmh = Math.round((raceDistance / (totalSec / 3600)) * 100) / 100;
       }
     }
 
@@ -919,24 +1038,126 @@ app.get('/api/public/results/:eventId/:bib', (req, res) => {
       province: participant.province || null,
       city: participant.city || null,
       isLocal: participant.isLocal || false,
-      chipTime: result?.time || result?.chipTime || null,
-      netTime: result?.time || result?.chipTime || null,
+      raceId: result?.raceId || participant.raceId || null,
+      raceName: race?.name || null,
+      raceDistance,
+      raceElevation: race?.elevationGain || null,
+      chipTime: officialTime,
+      chipTimeRaw: result?.chipTime || null,
+      netTime,
+      officialTime,
       startTime: result?.startTime || null,
       position: result?.position || null,
       categoryPosition,
       genderPosition,
+      totalFinishers,
+      totalCategory,
+      totalGender,
+      pace: globalPace,
+      speedKmh,
       penalty: result?.penalty || null,
       penaltyReason: result?.penaltyReason || null,
       status,
       splits: runnerSplits,
+      laps: runnerLaps,
       event: {
         id: event.id,
         name: event.name,
+        date: event.date,
+        location: event.location,
         distance: event.distance,
         elevationGain: event.elevationGain || null,
         image: event.image || null,
+        poster: event.poster || null,
         races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, elevationGain: r.elevationGain || null })),
       }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/compare/:eventId?bibs=1,2,3 — Comparar hasta 3 corredores
+app.get('/api/public/compare/:eventId', (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const bibsParam = req.query.bibs || '';
+    const bibs = bibsParam.split(',').map(b => b.trim()).filter(Boolean).slice(0, 3);
+    if (bibs.length === 0) return res.status(400).json({ message: 'Parámetro bibs requerido' });
+
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const eventSplits = splits.filter(s => s.eventId === eventId).sort((a, b) => a.splitIndex - b.splitIndex);
+
+    const runners = bibs.map(bib => {
+      const participant = participants.find(p => p.bib === bib && p.eventId === eventId);
+      if (!participant) return { bib, error: 'Participante no encontrado' };
+      const result = results.find(r => r.bib === bib && r.eventId === eventId);
+      const race = (event.races || []).find(r => r.id === (result?.raceId || participant.raceId));
+      const raceDistance = race?.distance || event.distance || 0;
+      const offsetMs = (race?.startOffset || 0) * 1000;
+
+      const adjust = (t) => {
+        if (!t) return null;
+        if (offsetMs === 0) return t;
+        const ms = timeToMsHelper(t);
+        if (ms === Infinity) return t;
+        return msToTimeHelper(Math.max(0, ms - offsetMs));
+      };
+
+      const runnerSplits = eventSplits.map(s => {
+        const entry = (s.data || []).find(d => d.bib === bib);
+        if (!entry) return { splitIndex: s.splitIndex, name: s.name || `Punto ${s.splitIndex + 1}`, time: null, cumulative: null };
+        return {
+          splitIndex: s.splitIndex,
+          name: s.name || `Punto ${s.splitIndex + 1}`,
+          time: entry.time || null,
+          cumulative: adjust(entry.cumulative || entry.time) || null,
+        };
+      });
+
+      const officialTime = result?.time || adjust(result?.chipTime) || null;
+      let pace = null;
+      if (officialTime && raceDistance > 0) {
+        const ms = timeToMsHelper(officialTime);
+        if (ms !== Infinity) {
+          const paceSec = (ms / 1000) / raceDistance;
+          const m = Math.floor(paceSec / 60);
+          const s2 = Math.round(paceSec % 60);
+          pace = `${m}:${String(s2).padStart(2, '0')}`;
+        }
+      }
+
+      return {
+        bib: participant.bib,
+        firstName: participant.firstName,
+        lastName: participant.lastName,
+        gender: participant.gender,
+        category: participant.category,
+        team: participant.team,
+        province: participant.province,
+        raceId: result?.raceId || participant.raceId || null,
+        raceName: race?.name || null,
+        raceDistance,
+        chipTime: officialTime,
+        position: result?.position || null,
+        pace,
+        status: !result ? 'DNS' : !result.chipTime && !result.startTime ? 'DNS' : !result.chipTime ? 'DNF' : 'Finalizado',
+        splits: runnerSplits,
+      };
+    });
+
+    res.json({
+      event: {
+        id: event.id,
+        name: event.name,
+        date: event.date,
+        location: event.location,
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+      },
+      splits: eventSplits.map(s => ({ splitIndex: s.splitIndex, name: s.name || `Punto ${s.splitIndex + 1}` })),
+      runners,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

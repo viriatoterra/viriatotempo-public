@@ -4,6 +4,7 @@ import compression from 'compression';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { generateShareImage } from './share-image.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1238,6 +1239,131 @@ app.get('/health', (req, res) => {
     participants: participants.length,
     results: results.length,
   });
+});
+
+// GET /api/public/share-image/:eventId/:bib — Genera imagen PNG (Stories) para iOS/Android
+app.get('/api/public/share-image/:eventId/:bib', async (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const bib = req.params.bib;
+    const { raceId } = req.query;
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+
+    const participant = participants.find(p => p.bib === bib && p.eventId === eventId);
+    if (!participant) return res.status(404).json({ message: 'Participante no encontrado' });
+
+    const result = results.find(r => r.bib === bib && r.eventId === eventId);
+
+    const status = !result ? 'DNS'
+      : !result.chipTime && !result.startTime ? 'DNS'
+      : !result.chipTime ? 'DNF'
+      : 'Finalizado';
+
+    // Carrera del corredor + offset
+    const race = raceId
+      ? (event.races || []).find(r => String(r.id) === String(raceId))
+      : (result?.raceId ? (event.races || []).find(r => String(r.id) === String(result.raceId)) : null);
+    const raceName = race ? race.name : null;
+    const distance = race ? race.distance : event.distance;
+    const elevationGain = race ? (race.elevationGain || event.elevationGain) : event.elevationGain;
+    const raceOffsetMs = (race?.startOffset || 0) * 1000;
+    const applyOffsetMs = (timeStr) => {
+      if (!timeStr) return null;
+      if (raceOffsetMs === 0) return timeStr;
+      const ms = timeToMsHelper(timeStr);
+      if (ms === Infinity) return timeStr;
+      return msToTimeHelper(Math.max(0, ms - raceOffsetMs));
+    };
+
+    // Posiciones general/categoría/género
+    let categoryPosition = null;
+    let genderPosition = null;
+    if (result && result.chipTime) {
+      let raceResults = results.filter(r => r.eventId === eventId && r.chipTime && !r.isOTL);
+      if (result.raceId) raceResults = raceResults.filter(r => r.raceId === result.raceId);
+      const enrichedAll = raceResults.map(r => {
+        const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
+        return p ? { bib: r.bib, chipTime: r.chipTime, penalty: r.penalty, gender: p.gender, category: p.category } : null;
+      }).filter(Boolean).sort((a, b) => {
+        const aT = timeToMsHelper(a.chipTime) + (a.penalty ? timeToMsHelper(a.penalty) : 0);
+        const bT = timeToMsHelper(b.chipTime) + (b.penalty ? timeToMsHelper(b.penalty) : 0);
+        return aT - bT;
+      });
+      if (participant.category) {
+        const catIdx = enrichedAll.filter(r => r.category === participant.category).findIndex(r => r.bib === bib);
+        if (catIdx >= 0) categoryPosition = catIdx + 1;
+      }
+      if (participant.gender) {
+        const genIdx = enrichedAll.filter(r => r.gender === participant.gender).findIndex(r => r.bib === bib);
+        if (genIdx >= 0) genderPosition = genIdx + 1;
+      }
+    }
+
+    // Splits del corredor con offset aplicado
+    const runnerSplits = splits
+      .filter(s => s.eventId === eventId)
+      .sort((a, b) => a.splitIndex - b.splitIndex)
+      .map(s => {
+        const entry = (s.data || []).find(d => d.bib === bib);
+        if (!entry) return null;
+        return {
+          splitIndex: s.splitIndex,
+          name: s.name || `Punto ${s.splitIndex + 1}`,
+          time: entry.time,
+          cumulative: applyOffsetMs(entry.cumulative || entry.time),
+        };
+      })
+      .filter(Boolean);
+
+    // GPX track del corredor
+    let gpxPoints = null;
+    const gpxTracks = (event.gpxTracks && Object.keys(event.gpxTracks).length > 0)
+      ? event.gpxTracks
+      : (event.gpxTrack ? { _default: event.gpxTrack } : {});
+    const trackKey = race ? race.id : Object.keys(gpxTracks)[0];
+    if (trackKey && gpxTracks[trackKey]) {
+      const parsed = parseGpxToPoints(gpxTracks[trackKey]);
+      if (parsed.points && parsed.points.length >= 2) gpxPoints = parsed.points;
+    }
+
+    // Tiempo oficial (con offset aplicado)
+    const officialTime = result?.time || applyOffsetMs(result?.chipTime) || null;
+
+    const detail = {
+      bib: participant.bib,
+      firstName: participant.firstName,
+      lastName: participant.lastName,
+      gender: participant.gender,
+      team: participant.team || null,
+      category: participant.category || null,
+      chipTime: officialTime,
+      position: result?.position || null,
+      categoryPosition,
+      genderPosition,
+      status,
+      splits: runnerSplits,
+    };
+
+    const eventInfo = {
+      name: event.name,
+      date: event.date,
+      location: event.location,
+      type: event.type,
+    };
+
+    const posterUrl = event.poster || event.image || null;
+
+    const pngBuffer = await generateShareImage(detail, eventInfo, raceName, distance, posterUrl, gpxPoints, elevationGain);
+
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'no-cache');
+    res.set('Content-Disposition', `inline; filename="resultado-${bib}.png"`);
+    res.send(pngBuffer);
+  } catch (error) {
+    console.error('Share image error:', error);
+    res.status(500).json({ message: 'Error generando imagen', error: error.message });
+  }
 });
 
 // Image proxy — para compartir en redes (evita CORS con imágenes externas)

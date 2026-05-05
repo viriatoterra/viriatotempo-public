@@ -1,10 +1,9 @@
 // share-image.js — Server-side canvas rendering for social media share cards
-// Mirrors the client-side shareCard.js but uses node-canvas
+// Light theme version — port of mobile/lib/shareCard.js renderCanvas()
 import { createCanvas, loadImage } from 'canvas';
 
 const W = 1080;
 const H = 1920;
-
 const CYCLING_TYPES = ['mtb', 'gravel', 'mtb_gravel'];
 
 // ==================== HELPERS ====================
@@ -21,6 +20,25 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.lineTo(x, y + r);
   ctx.quadraticCurveTo(x, y, x + r, y);
   ctx.closePath();
+}
+
+// Manual letter-spacing — node-canvas 2.x doesn't reliably support ctx.letterSpacing
+function fillTextSpaced(ctx, text, x, y, spacing = 0) {
+  if (!spacing) { ctx.fillText(text, x, y); return; }
+  const chars = text.split('');
+  const widths = chars.map(c => ctx.measureText(c).width);
+  const totalW = widths.reduce((a, b) => a + b, 0) + spacing * (chars.length - 1);
+  let cursorX;
+  const align = ctx.textAlign;
+  if (align === 'center') cursorX = x - totalW / 2;
+  else if (align === 'right') cursorX = x - totalW;
+  else cursorX = x;
+  ctx.textAlign = 'left';
+  for (let i = 0; i < chars.length; i++) {
+    ctx.fillText(chars[i], cursorX, y);
+    cursorX += widths[i] + spacing;
+  }
+  ctx.textAlign = align;
 }
 
 function wrapText(ctx, text, x, y, maxW, lineH) {
@@ -47,44 +65,26 @@ function calcPace(chipTime, distance, eventType) {
   const secParts = (parts[2] || '0').split('.');
   const totalSeconds = (parseInt(parts[0]) * 3600) + (parseInt(parts[1]) * 60) + parseInt(secParts[0]);
   if (totalSeconds <= 0) return null;
-
   if (CYCLING_TYPES.includes(eventType)) {
-    const totalHours = totalSeconds / 3600;
-    return (distance / totalHours).toFixed(1);
+    return (distance / (totalSeconds / 3600)).toFixed(1);
   }
-
   const paceSeconds = totalSeconds / distance;
   const mins = Math.floor(paceSeconds / 60);
   const secs = Math.floor(paceSeconds % 60);
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function drawStatBox(ctx, x, y, w, h, value, label, accentColor) {
-  roundRect(ctx, x, y, w, h, 14);
-  ctx.fillStyle = 'rgba(255,255,255,0.06)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Accent line at top
-  ctx.save();
-  roundRect(ctx, x + 16, y, w - 32, 3, 2);
-  ctx.fillStyle = accentColor;
-  ctx.fill();
-  ctx.restore();
-
-  // Value
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 42px sans-serif';
-  ctx.fillStyle = '#fff';
-  ctx.fillText(value, x + w / 2, y + 62);
-
-  // Label
-  ctx.font = 'bold 16px sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.fillText(label, x + w / 2, y + h - 18);
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+
+// ==================== GPX TRACK MINIMAP ====================
 
 function drawTrackMinimap(ctx, points, x, y, w, h) {
   if (!points || points.length < 2) return;
@@ -104,7 +104,7 @@ function drawTrackMinimap(ctx, points, x, y, w, h) {
   const realW = lonRange * lonScale;
   const realH = latRange;
 
-  const pad = 20;
+  const pad = 24;
   const areaW = w - pad * 2;
   const areaH = h - pad * 2;
   const scale = Math.min(areaW / realW, areaH / realH);
@@ -118,15 +118,15 @@ function drawTrackMinimap(ctx, points, x, y, w, h) {
     py: offY + drawH - (p.lat - minLat) * scale,
   });
 
-  // Background
+  // Light gray background
   roundRect(ctx, x, y, w, h, 16);
-  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+  ctx.fillStyle = '#f3f4f6';
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Glow
+  // Outer red glow
   ctx.beginPath();
   const first = project(points[0]);
   ctx.moveTo(first.px, first.py);
@@ -134,8 +134,8 @@ function drawTrackMinimap(ctx, points, x, y, w, h) {
     const pt = project(points[i]);
     ctx.lineTo(pt.px, pt.py);
   }
-  ctx.strokeStyle = 'rgba(59,130,246,0.2)';
-  ctx.lineWidth = 8;
+  ctx.strokeStyle = 'rgba(230,57,70,0.18)';
+  ctx.lineWidth = 12;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.stroke();
@@ -147,8 +147,8 @@ function drawTrackMinimap(ctx, points, x, y, w, h) {
     const pt = project(points[i]);
     ctx.lineTo(pt.px, pt.py);
   }
-  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#e63946';
+  ctx.lineWidth = 4;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.stroke();
@@ -156,321 +156,684 @@ function drawTrackMinimap(ctx, points, x, y, w, h) {
   // Start marker (green)
   const startPt = project(points[0]);
   ctx.beginPath();
-  ctx.arc(startPt.px, startPt.py, 8, 0, Math.PI * 2);
+  ctx.arc(startPt.px, startPt.py, 11, 0, Math.PI * 2);
   ctx.fillStyle = '#22c55e';
   ctx.fill();
   ctx.strokeStyle = '#fff';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 3;
   ctx.stroke();
 
-  // Finish marker (red)
+  // Finish marker (dark)
   const endPt = project(points[points.length - 1]);
   ctx.beginPath();
-  ctx.arc(endPt.px, endPt.py, 8, 0, Math.PI * 2);
-  ctx.fillStyle = '#ef4444';
+  ctx.arc(endPt.px, endPt.py, 11, 0, Math.PI * 2);
+  ctx.fillStyle = '#1a1a2e';
   ctx.fill();
   ctx.strokeStyle = '#fff';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 3;
   ctx.stroke();
+}
+
+// ==================== ELEVATION PROFILE ====================
+
+function drawElevationProfile(ctx, points, x, y, w, h) {
+  if (!points || points.length < 3) return false;
+
+  const series = [];
+  let cumKm = 0;
+  let prev = null;
+  let minEle = Infinity, maxEle = -Infinity;
+  for (const p of points) {
+    if (prev) cumKm += haversineKm(prev.lat, prev.lon, p.lat, p.lon);
+    if (p.ele != null && !isNaN(p.ele)) {
+      series.push({ km: cumKm, ele: p.ele });
+      if (p.ele < minEle) minEle = p.ele;
+      if (p.ele > maxEle) maxEle = p.ele;
+    }
+    prev = p;
+  }
+  if (series.length < 3 || maxEle === minEle) return false;
+
+  const totalKm = series[series.length - 1].km;
+  const pad = 20;
+  const padBottom = 40;
+  const padLeft = 50;
+  const areaX = x + padLeft;
+  const areaY = y + pad;
+  const areaW = w - padLeft - pad;
+  const areaH = h - pad - padBottom;
+
+  // Light background
+  roundRect(ctx, x, y, w, h, 16);
+  ctx.fillStyle = '#f9fafb';
+  ctx.fill();
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Horizontal grid lines + elevation labels
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const yy = areaY + (areaH * i / 3);
+    ctx.beginPath();
+    ctx.moveTo(areaX, yy);
+    ctx.lineTo(areaX + areaW, yy);
+    ctx.stroke();
+
+    const eleVal = Math.round(maxEle - (maxEle - minEle) * i / 3);
+    ctx.font = '500 14px sans-serif';
+    ctx.fillStyle = '#9ca3af';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${eleVal}m`, areaX - 6, yy + 4);
+  }
+
+  const project = (s) => ({
+    px: areaX + (s.km / totalKm) * areaW,
+    py: areaY + areaH - ((s.ele - minEle) / (maxEle - minEle)) * areaH,
+  });
+
+  // Filled area (red gradient)
+  ctx.beginPath();
+  const startP = project(series[0]);
+  ctx.moveTo(startP.px, areaY + areaH);
+  ctx.lineTo(startP.px, startP.py);
+  for (let i = 1; i < series.length; i++) {
+    const p = project(series[i]);
+    ctx.lineTo(p.px, p.py);
+  }
+  ctx.lineTo(areaX + areaW, areaY + areaH);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, areaY, 0, areaY + areaH);
+  grad.addColorStop(0, 'rgba(230,57,70,0.4)');
+  grad.addColorStop(1, 'rgba(230,57,70,0.05)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Top profile line
+  ctx.beginPath();
+  ctx.moveTo(startP.px, startP.py);
+  for (let i = 1; i < series.length; i++) {
+    const p = project(series[i]);
+    ctx.lineTo(p.px, p.py);
+  }
+  ctx.strokeStyle = '#e63946';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // Km labels on X axis
+  ctx.font = '500 14px sans-serif';
+  ctx.fillStyle = '#6b7280';
+  ctx.textAlign = 'center';
+  ctx.fillText('0 km', areaX, areaY + areaH + 22);
+  ctx.fillText(`${Math.round(totalKm / 2)} km`, areaX + areaW / 2, areaY + areaH + 22);
+  ctx.fillText(`${Math.round(totalKm)} km`, areaX + areaW, areaY + areaH + 22);
+
+  return true;
+}
+
+// ==================== SPLITS TABLE ====================
+
+function drawSplitsTable(ctx, splits, x, y, w, maxRows = 6) {
+  if (!splits || splits.length === 0) return 0;
+
+  const headerH = 36;
+  const rowH = 38;
+  const indicatorH = 32;
+  const padBottom = 8;
+
+  let visibleSplits;
+  let showIndicator = false;
+  let indicatorIdx = -1;
+  let omittedCount = 0;
+  if (splits.length <= maxRows) {
+    visibleSplits = splits;
+  } else if (maxRows >= 4) {
+    const halfTop = Math.ceil(maxRows / 2);
+    const halfBot = maxRows - halfTop;
+    visibleSplits = [...splits.slice(0, halfTop), ...splits.slice(-halfBot)];
+    showIndicator = true;
+    indicatorIdx = halfTop;
+    omittedCount = splits.length - maxRows;
+  } else {
+    visibleSplits = splits.slice(0, maxRows);
+    showIndicator = true;
+    indicatorIdx = visibleSplits.length;
+    omittedCount = splits.length - maxRows;
+  }
+
+  const tableH = headerH + rowH * visibleSplits.length + (showIndicator ? indicatorH : 0) + padBottom;
+
+  // Background
+  roundRect(ctx, x, y, w, tableH, 16);
+  ctx.fillStyle = '#f9fafb';
+  ctx.fill();
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Dark header
+  roundRect(ctx, x, y, w, headerH, 16);
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fill();
+  ctx.fillRect(x, y + headerH - 16, w, 16);
+
+  // Header text
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'left';
+  const padL = 24;
+  const colDistX = x + w * 0.45;
+  const colTimeX = x + w - padL;
+  fillTextSpaced(ctx, 'PUNTO', x + padL, y + 23, 2);
+  fillTextSpaced(ctx, 'DISTANCIA', colDistX, y + 23, 2);
+  ctx.textAlign = 'right';
+  fillTextSpaced(ctx, 'TIEMPO', colTimeX, y + 23, 2);
+
+  let cursorY = y + headerH;
+  let visualIdx = 0;
+  for (let i = 0; i < visibleSplits.length; i++) {
+    if (showIndicator && i === indicatorIdx) {
+      ctx.font = '500 13px sans-serif';
+      ctx.fillStyle = '#9ca3af';
+      ctx.textAlign = 'center';
+      ctx.fillText(`···  ${omittedCount} parciales más  ···`, x + w / 2, cursorY + 21);
+      cursorY += indicatorH;
+    }
+
+    const s = visibleSplits[i];
+
+    if (visualIdx % 2 === 1) {
+      ctx.fillStyle = '#f3f4f6';
+      ctx.fillRect(x, cursorY, w, rowH);
+    }
+
+    // Name badge (truncate if long)
+    let splitName = s.name || `Punto ${s.splitIndex + 1}`;
+    ctx.font = 'bold 14px sans-serif';
+    const maxBadgeW = colDistX - x - padL - 12;
+    if (ctx.measureText(splitName).width > maxBadgeW - 18) {
+      while (ctx.measureText(splitName + '…').width > maxBadgeW - 18 && splitName.length > 3) {
+        splitName = splitName.slice(0, -1);
+      }
+      splitName = splitName + '…';
+    }
+    const labelW = ctx.measureText(splitName).width + 18;
+    roundRect(ctx, x + padL, cursorY + 9, labelW, 22, 6);
+    ctx.fillStyle = '#fef3c7';
+    ctx.fill();
+    ctx.fillStyle = '#92400e';
+    ctx.textAlign = 'left';
+    ctx.fillText(splitName, x + padL + 9, cursorY + 24);
+
+    // Distance
+    if (s.distance) {
+      ctx.font = '500 16px sans-serif';
+      ctx.fillStyle = '#6b7280';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${s.distance} km`, colDistX, cursorY + 24);
+    }
+
+    // Time (cumulative)
+    const t = (s.cumulative || s.time || '—').split('.')[0];
+    ctx.font = 'bold 18px monospace';
+    ctx.fillStyle = '#1a1a2e';
+    ctx.textAlign = 'right';
+    fillTextSpaced(ctx, t, colTimeX, cursorY + 25, 1);
+
+    cursorY += rowH;
+    visualIdx++;
+  }
+
+  if (showIndicator && indicatorIdx === visibleSplits.length) {
+    ctx.font = '500 13px sans-serif';
+    ctx.fillStyle = '#9ca3af';
+    ctx.textAlign = 'center';
+    ctx.fillText(`···  ${omittedCount} parciales más  ···`, x + w / 2, cursorY + 21);
+  }
+
+  return tableH;
+}
+
+// ==================== LAPS TABLE ====================
+
+function drawLapsTable(ctx, runnerLaps, x, y, w, maxRows = 6) {
+  if (!runnerLaps || runnerLaps.length === 0) return 0;
+
+  const headerH = 36;
+  const rowH = 38;
+  const indicatorH = 32;
+  const padBottom = 8;
+
+  let visibleLaps;
+  let showIndicator = false;
+  let indicatorIdx = -1;
+  let omittedCount = 0;
+  if (runnerLaps.length <= maxRows) {
+    visibleLaps = runnerLaps;
+  } else if (maxRows >= 4) {
+    const halfTop = Math.ceil(maxRows / 2);
+    const halfBot = maxRows - halfTop;
+    visibleLaps = [...runnerLaps.slice(0, halfTop), ...runnerLaps.slice(-halfBot)];
+    showIndicator = true;
+    indicatorIdx = halfTop;
+    omittedCount = runnerLaps.length - maxRows;
+  } else {
+    visibleLaps = runnerLaps.slice(0, maxRows);
+    showIndicator = true;
+    indicatorIdx = visibleLaps.length;
+    omittedCount = runnerLaps.length - maxRows;
+  }
+
+  const tableH = headerH + rowH * visibleLaps.length + (showIndicator ? indicatorH : 0) + padBottom;
+
+  roundRect(ctx, x, y, w, tableH, 16);
+  ctx.fillStyle = '#f9fafb';
+  ctx.fill();
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  roundRect(ctx, x, y, w, headerH, 16);
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fill();
+  ctx.fillRect(x, y + headerH - 16, w, 16);
+
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'left';
+  const padL = 24;
+  const colTimeX = x + w * 0.5;
+  const colCumX = x + w - padL;
+  fillTextSpaced(ctx, 'VUELTA', x + padL, y + 23, 2);
+  fillTextSpaced(ctx, 'T. VUELTA', colTimeX, y + 23, 2);
+  ctx.textAlign = 'right';
+  fillTextSpaced(ctx, 'ACUMULADO', colCumX, y + 23, 2);
+
+  let cursorY = y + headerH;
+  let visualIdx = 0;
+  for (let i = 0; i < visibleLaps.length; i++) {
+    if (showIndicator && i === indicatorIdx) {
+      ctx.font = '500 13px sans-serif';
+      ctx.fillStyle = '#9ca3af';
+      ctx.textAlign = 'center';
+      ctx.fillText(`···  ${omittedCount} vueltas más  ···`, x + w / 2, cursorY + 21);
+      cursorY += indicatorH;
+    }
+
+    const l = visibleLaps[i];
+
+    if (visualIdx % 2 === 1) {
+      ctx.fillStyle = '#f3f4f6';
+      ctx.fillRect(x, cursorY, w, rowH);
+    }
+
+    // Lap number badge (blue)
+    const lapLabel = `V${l.lapNumber}`;
+    ctx.font = 'bold 14px sans-serif';
+    const labelW = ctx.measureText(lapLabel).width + 18;
+    roundRect(ctx, x + padL, cursorY + 9, labelW, 22, 6);
+    ctx.fillStyle = '#dbeafe';
+    ctx.fill();
+    ctx.fillStyle = '#1e40af';
+    ctx.textAlign = 'left';
+    ctx.fillText(lapLabel, x + padL + 9, cursorY + 24);
+
+    // Lap time
+    const lapT = (l.lapTime || '—').split('.')[0];
+    ctx.font = '600 16px monospace';
+    ctx.fillStyle = '#374151';
+    ctx.textAlign = 'left';
+    fillTextSpaced(ctx, lapT, colTimeX, cursorY + 25, 1);
+
+    // Cumulative
+    const cumT = (l.cumulative || '—').split('.')[0];
+    ctx.font = 'bold 18px monospace';
+    ctx.fillStyle = '#1a1a2e';
+    ctx.textAlign = 'right';
+    fillTextSpaced(ctx, cumT, colCumX, cursorY + 25, 1);
+
+    cursorY += rowH;
+    visualIdx++;
+  }
+
+  if (showIndicator && indicatorIdx === visibleLaps.length) {
+    ctx.font = '500 13px sans-serif';
+    ctx.fillStyle = '#9ca3af';
+    ctx.textAlign = 'center';
+    ctx.fillText(`···  ${omittedCount} vueltas más  ···`, x + w / 2, cursorY + 21);
+  }
+
+  return tableH;
 }
 
 // ==================== MAIN RENDER ====================
 
-export async function generateShareImage(detail, eventInfo, raceName, distance, posterUrl, gpxPoints, elevationGain) {
+export async function generateShareImage(detail, eventInfo, raceName, distance, posterUrl, gpxPoints, elevationGain, runnerLaps = null) {
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
 
-  // --- Base dark background ---
-  ctx.fillStyle = '#0d0d1a';
+  const isFinished = detail.status === 'Finalizado';
+  const isCycling = CYCLING_TYPES.includes(eventInfo?.type);
+  const hasGpx = gpxPoints && gpxPoints.length >= 2;
+  const hasEle = hasGpx && gpxPoints.some(p => p.ele != null && !isNaN(p.ele));
+  const splitsList = (detail.splits || []).filter(s => s && (s.cumulative || s.time));
+  const lapsList = (runnerLaps || detail.laps || []).filter(l => l && (l.cumulative || l.lapTime));
+  const hasSplits = splitsList.length > 0;
+  const hasLaps = lapsList.length > 0;
+
+  // ==================== WHITE BACKGROUND ====================
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
 
-  // --- Poster as full background ---
+  // ==================== HEADER: BRANDING ====================
+  let cy = 100;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 30px sans-serif';
+  ctx.fillStyle = '#1a1a2e';
+  fillTextSpaced(ctx, 'VIRIATO TEMPO', W / 2, cy, 4);
+  cy += 22;
+
+  // Red accent line
+  ctx.strokeStyle = '#e63946';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - 60, cy);
+  ctx.lineTo(W / 2 + 60, cy);
+  ctx.stroke();
+  cy += 40;
+
+  ctx.font = '500 14px sans-serif';
+  ctx.fillStyle = '#9ca3af';
+  fillTextSpaced(ctx, 'CRONOMETRAJE OFICIAL', W / 2, cy, 3);
+  cy += 56;
+
+  // ==================== POSTER ====================
   let posterImg = null;
   if (posterUrl) {
-    try {
-      posterImg = await loadImage(posterUrl);
-    } catch { /* ignore poster load failure */ }
+    try { posterImg = await loadImage(posterUrl); } catch { /* ignore */ }
   }
 
   if (posterImg) {
+    const posterMaxH = 380;
+    const posterMargin = 50;
+    const posterW = W - posterMargin * 2;
+    const posterRatio = posterImg.width / posterImg.height;
+    const posterH = posterRatio > 1
+      ? Math.min(posterW / posterRatio, posterMaxH)
+      : posterMaxH;
+    const posterX = posterMargin;
+    const posterY = cy;
+
+    // Card with shadow
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.15)';
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 8;
+    roundRect(ctx, posterX, posterY, posterW, posterH, 24);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.restore();
+
+    // Cover-fit poster inside rounded rect
+    ctx.save();
+    roundRect(ctx, posterX, posterY, posterW, posterH, 24);
+    ctx.clip();
     const imgRatio = posterImg.width / posterImg.height;
-    const canvasRatio = W / H;
+    const cardRatio = posterW / posterH;
     let sx, sy, sw, sh;
-    if (imgRatio > canvasRatio) {
+    if (imgRatio > cardRatio) {
       sh = posterImg.height;
-      sw = sh * canvasRatio;
+      sw = sh * cardRatio;
       sx = (posterImg.width - sw) / 2;
       sy = 0;
     } else {
       sw = posterImg.width;
-      sh = sw / canvasRatio;
+      sh = sw / cardRatio;
       sx = 0;
       sy = (posterImg.height - sh) / 2;
     }
-    ctx.drawImage(posterImg, sx, sy, sw, sh, 0, 0, W, H);
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(0, 0, W, H);
-  } else {
-    const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, '#1a1a2e');
-    grad.addColorStop(0.5, '#0d0d1a');
-    grad.addColorStop(1, '#1a1a2e');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(posterImg, sx, sy, sw, sh, posterX, posterY, posterW, posterH);
+    ctx.restore();
+
+    cy += posterH + 30;
   }
 
-  // ==================== CENTRAL RESULT CARD ====================
-  const cardMargin = 50;
-  const cardW = W - cardMargin * 2;
-  const cardX = cardMargin;
-
-  const splitsCount = Math.min((detail.splits || []).length, 8);
-  const extraSplits = (detail.splits || []).length > 8;
-  let estimatedH = 500;
-  if (raceName) estimatedH += 58;
-  if (detail.category) estimatedH += 40;
-  if (detail.genderPosition) estimatedH += 40;
-  if (detail.team) estimatedH += 40;
-  if (splitsCount > 0) estimatedH += 66 + splitsCount * 34 + (extraSplits ? 30 : 0);
-  const hasGpx = gpxPoints && gpxPoints.length >= 2;
-  if (hasGpx) estimatedH += 380;
-  const cardH = Math.max(estimatedH, 500);
-  const cardY = Math.min(320, (H - cardH - 160) / 2);
-
-  // Card background (glassmorphism)
-  roundRect(ctx, cardX, cardY, cardW, cardH, 32);
-  ctx.fillStyle = 'rgba(13,13,26,0.82)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  roundRect(ctx, cardX + 1, cardY + 1, cardW - 2, cardH - 2, 31);
-  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // ---- Event name ----
-  let cy = cardY + 60;
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 36px sans-serif';
-  ctx.fillStyle = '#e63946';
-  const nameEndY = wrapText(ctx, (eventInfo.name || 'Evento').toUpperCase(), W / 2, cy, cardW - 80, 44);
-  cy = nameEndY + 16;
-
-  // Date + location
+  // ==================== EVENT INFO ====================
   const dateStr = eventInfo.date ? new Date(eventInfo.date).toLocaleDateString('es-ES', {
-    day: 'numeric', month: 'long', year: 'numeric'
-  }) : '';
-  const locStr = eventInfo.location || '';
-  const subline = [dateStr, locStr].filter(Boolean).join('  ·  ');
+    day: 'numeric', month: 'long'
+  }).toUpperCase() : '';
+  const locStr = (eventInfo.location || '').toUpperCase();
+  const subline = [dateStr, locStr].filter(Boolean).join('   ·   ');
   if (subline) {
-    ctx.font = '22px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.fillText(subline, W / 2, cy + 20);
-    cy += 50;
-  } else {
-    cy += 14;
-  }
-
-  // Race badge
-  if (raceName) {
-    cy += 10;
-    ctx.font = 'bold 20px sans-serif';
-    const raceLabel = raceName.toUpperCase();
-    const tw = ctx.measureText(raceLabel).width + 40;
-    roundRect(ctx, (W - tw) / 2, cy, tw, 34, 17);
-    ctx.fillStyle = 'rgba(230,57,70,0.25)';
-    ctx.fill();
-    ctx.strokeStyle = '#e63946';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = '#e63946';
+    ctx.font = '600 18px sans-serif';
+    ctx.fillStyle = '#6b7280';
     ctx.textAlign = 'center';
-    ctx.fillText(raceLabel, W / 2, cy + 24);
-    cy += 58;
-  } else {
-    cy += 20;
+    fillTextSpaced(ctx, subline, W / 2, cy, 2);
+    cy += 44;
   }
 
-  // Divider
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  // Event name (wrapped, no manual spacing)
+  ctx.font = 'bold 36px sans-serif';
+  ctx.fillStyle = '#1a1a2e';
+  const evNameY = wrapText(ctx, (eventInfo.name || 'EVENTO').toUpperCase(), W / 2, cy, W - 100, 50);
+  cy = evNameY + 36;
+
+  // Race badge (yellow)
+  if (raceName) {
+    ctx.font = 'bold 18px sans-serif';
+    const raceLabel = raceName.toUpperCase();
+    const tw = ctx.measureText(raceLabel).width + 60;
+    roundRect(ctx, (W - tw) / 2, cy, tw, 38, 19);
+    ctx.fillStyle = '#fef9c3';
+    ctx.fill();
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#713f12';
+    ctx.textAlign = 'center';
+    fillTextSpaced(ctx, raceLabel, W / 2, cy + 26, 1.5);
+    cy += 64;
+  }
+
+  // Subtle divider
+  cy += 16;
+  ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(cardX + 60, cy);
-  ctx.lineTo(cardX + cardW - 60, cy);
+  ctx.moveTo(100, cy);
+  ctx.lineTo(W - 100, cy);
   ctx.stroke();
-  cy += 30;
+  cy += 50;
 
-  // Runner name
-  ctx.font = 'bold 52px sans-serif';
-  ctx.fillStyle = '#fff';
+  // ==================== RUNNER ====================
+  const fullName = `${detail.firstName || ''} ${detail.lastName || ''}`.trim();
+  ctx.font = 'bold 54px sans-serif';
+  if (ctx.measureText(fullName).width > W - 80) {
+    ctx.font = 'bold 42px sans-serif';
+  }
+  ctx.fillStyle = '#1a1a2e';
   ctx.textAlign = 'center';
-  const runnerEndY = wrapText(ctx, `${detail.firstName} ${detail.lastName}`, W / 2, cy + 40, cardW - 100, 60);
-  cy = runnerEndY + 20;
+  const nameEndY = wrapText(ctx, fullName.toUpperCase(), W / 2, cy, W - 60, 70);
+  cy = nameEndY + 28;
 
-  // Bib badge
-  ctx.font = 'bold 22px sans-serif';
-  const bibStr = `DORSAL #${detail.bib}`;
-  const bibW = ctx.measureText(bibStr).width + 32;
-  roundRect(ctx, (W - bibW) / 2, cy, bibW, 34, 8);
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  ctx.textAlign = 'center';
-  ctx.fillText(bibStr, W / 2, cy + 24);
-  cy += 60;
+  // Bib + team
+  const subItems = [];
+  if (detail.bib) subItems.push(`#${detail.bib}`);
+  if (detail.team) subItems.push(detail.team);
+  if (subItems.length > 0) {
+    ctx.font = '500 22px sans-serif';
+    ctx.fillStyle = '#6b7280';
+    fillTextSpaced(ctx, subItems.join('   ·   '), W / 2, cy, 1);
+    cy += 64;
+  }
 
-  // Stats
-  if (detail.status === 'Finalizado') {
-    const boxW = 280;
-    const boxH = 110;
-    const gap = 18;
-    const totalBoxW = boxW * 3 + gap * 2;
-    const startX = (W - totalBoxW) / 2;
-    const chipTime = detail.chipTime ? detail.chipTime.split('.')[0] : '--';
-    const isCycling = CYCLING_TYPES.includes(eventInfo?.type);
-    const pace = calcPace(detail.chipTime, distance, eventInfo?.type);
+  // ==================== TIME ====================
+  if (isFinished) {
+    const displayTime = detail.officialTime || detail.netTime || detail.chipTime;
+    const chipTime = displayTime ? displayTime.split('.')[0] : '—';
+    ctx.font = 'bold 130px monospace';
+    ctx.fillStyle = '#e63946';
+    fillTextSpaced(ctx, chipTime, W / 2, cy + 110, 4);
+    cy += 150;
 
-    drawStatBox(ctx, startX, cy, boxW, boxH,
-      detail.position ? `${detail.position}º` : '--', 'POSICIÓN', '#e63946');
-    drawStatBox(ctx, startX + boxW + gap, cy, boxW, boxH,
-      chipTime, 'TIEMPO', '#3b82f6');
-    drawStatBox(ctx, startX + (boxW + gap) * 2, cy, boxW, boxH,
-      pace || '--', isCycling ? 'VEL. KM/H' : 'RITMO /KM', '#f77f00');
-    cy += boxH + 30;
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillStyle = '#9ca3af';
+    fillTextSpaced(ctx, 'TIEMPO OFICIAL', W / 2, cy, 3);
+    cy += 50;
+
+    // Position chips
+    const chips = [];
+    if (detail.position) chips.push({ value: `${detail.position}º`, label: 'GENERAL', isTop3: detail.position <= 3 });
+    if (detail.category && detail.categoryPosition) {
+      chips.push({ value: `${detail.categoryPosition}º`, label: detail.category, isTop3: detail.categoryPosition <= 3 });
+    }
+    if (detail.gender && detail.genderPosition) {
+      const gLabel = detail.gender === 'female' ? 'FEMENINO' : 'MASCULINO';
+      chips.push({ value: `${detail.genderPosition}º`, label: gLabel, isTop3: detail.genderPosition <= 3 });
+    }
+
+    if (chips.length > 0) {
+      const chipH = 88;
+      const chipGap = 18;
+      const totalW = (W - 100);
+      const chipMaxW = (totalW - chipGap * (chips.length - 1)) / chips.length;
+      let chipX = (W - (chipMaxW * chips.length + chipGap * (chips.length - 1))) / 2;
+
+      chips.forEach(chip => {
+        roundRect(ctx, chipX, cy, chipMaxW, chipH, 18);
+        ctx.fillStyle = chip.isTop3 ? '#fef9c3' : '#f9fafb';
+        ctx.fill();
+        ctx.strokeStyle = chip.isTop3 ? '#facc15' : '#e5e7eb';
+        ctx.lineWidth = chip.isTop3 ? 2 : 1;
+        ctx.stroke();
+
+        ctx.font = 'bold 32px sans-serif';
+        ctx.fillStyle = chip.isTop3 ? '#713f12' : '#1a1a2e';
+        ctx.textAlign = 'center';
+        fillTextSpaced(ctx, chip.value, chipX + chipMaxW / 2, cy + 42, 1);
+
+        ctx.font = 'bold 11px sans-serif';
+        ctx.fillStyle = chip.isTop3 ? 'rgba(113,63,18,0.7)' : '#6b7280';
+        let lab = chip.label;
+        if (ctx.measureText(lab).width > chipMaxW - 16) {
+          while (ctx.measureText(lab + '...').width > chipMaxW - 16 && lab.length > 3) {
+            lab = lab.slice(0, -1);
+          }
+          lab = lab + '...';
+        }
+        fillTextSpaced(ctx, lab, chipX + chipMaxW / 2, cy + 70, 1.5);
+
+        chipX += chipMaxW + chipGap;
+      });
+      cy += chipH + 36;
+    }
+
+    // Pace + distance + elevation
+    const pace = calcPace(detail.officialTime || detail.netTime || detail.chipTime, distance, eventInfo?.type);
+    const detailParts = [];
+    if (pace) detailParts.push(isCycling ? `${pace} km/h` : `${pace} min/km`);
+    if (distance) detailParts.push(`${distance} km`);
+    if (elevationGain) detailParts.push(`D+ ${elevationGain} m`);
+    if (detailParts.length > 0) {
+      ctx.font = '500 18px sans-serif';
+      ctx.fillStyle = '#6b7280';
+      ctx.textAlign = 'center';
+      ctx.fillText(detailParts.join('   ·   '), W / 2, cy + 22);
+      cy += 60;
+    }
   } else {
-    const statusText = detail.status === 'DNF' ? 'NO FINALIZADO (DNF)' : 'NO PRESENTADO (DNS)';
-    ctx.font = 'bold 36px sans-serif';
+    ctx.font = 'bold 56px sans-serif';
     ctx.fillStyle = detail.status === 'DNF' ? '#ef4444' : '#9ca3af';
     ctx.textAlign = 'center';
-    ctx.fillText(statusText, W / 2, cy + 50);
-    cy += 100;
+    fillTextSpaced(ctx, detail.status === 'DNF' ? 'NO FINALIZÓ' : 'NO PRESENTADO', W / 2, cy + 60, 2);
+    cy += 110;
   }
 
-  // Category / Gender / Team
-  if (detail.category) {
-    const catLine = detail.categoryPosition
-      ? `${detail.category}  ·  ${detail.categoryPosition}º de categoría`
-      : detail.category;
-    ctx.font = '26px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.textAlign = 'center';
-    ctx.fillText(catLine, W / 2, cy + 10);
-    cy += 40;
-  }
+  // ==================== SPLITS / LAPS / GPX ====================
+  const sectionMargin = 50;
+  const sectionW = W - sectionMargin * 2;
+  const footerTopY = H - 100;
+  const rowH = 38;
+  const headerH = 36;
+  const sectionTitleH = 22 + 8;
 
-  if (detail.genderPosition) {
-    const gLabel = detail.gender === 'male' ? 'Masculino' : 'Femenino';
-    ctx.font = '26px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.fillText(`${gLabel}  ·  ${detail.genderPosition}º`, W / 2, cy + 10);
-    cy += 40;
-  }
-
-  if (detail.team) {
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.65)';
-    ctx.fillText(detail.team, W / 2, cy + 10);
-    cy += 40;
-  }
-
-  // Splits
-  const splits = detail.splits || [];
-  if (splits.length > 0) {
-    cy += 10;
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(cardX + 80, cy);
-    ctx.lineTo(cardX + cardW - 80, cy);
-    ctx.stroke();
-    cy += 28;
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.fillText('TIEMPOS PARCIALES', W / 2, cy);
-    cy += 28;
-
-    const maxSplits = Math.min(splits.length, 8);
-    const splitsAreaX = cardX + 80;
-    const splitsAreaW = cardW - 160;
-
-    for (let i = 0; i < maxSplits; i++) {
-      const s = splits[i];
-      const splitTime = (s.cumulative || s.time) ? (s.cumulative || s.time).split('.')[0] : '--';
-      const splitName = s.name || `Punto ${s.splitIndex + 1}`;
-
-      ctx.textAlign = 'left';
-      ctx.font = '22px sans-serif';
-      ctx.fillStyle = 'rgba(255,255,255,0.55)';
-      ctx.fillText(splitName, splitsAreaX, cy + 4);
-
-      ctx.textAlign = 'right';
-      ctx.font = 'bold 22px sans-serif';
-      ctx.fillStyle = 'rgba(255,255,255,0.7)';
-      ctx.fillText(splitTime, splitsAreaX + splitsAreaW, cy + 4);
-
-      cy += 34;
-    }
-
-    if (splits.length > maxSplits) {
+  if (hasSplits) {
+    let remainingH = footerTopY - cy;
+    if (remainingH >= 100) {
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillStyle = '#9ca3af';
       ctx.textAlign = 'center';
-      ctx.font = '18px sans-serif';
-      ctx.fillStyle = 'rgba(255,255,255,0.3)';
-      ctx.fillText(`+${splits.length - maxSplits} más`, W / 2, cy + 4);
-      cy += 30;
+      fillTextSpaced(ctx, 'PARCIALES (RACE SPLITS)', W / 2, cy, 3);
+      cy += sectionTitleH;
+
+      remainingH = footerTopY - cy;
+      const reserveBelow = (hasLaps ? 200 : 0) + (hasGpx ? 200 : 0);
+      const realFit = Math.floor((remainingH - reserveBelow - headerH - 8) / rowH);
+      const finalMaxRows = Math.max(splitsList.length <= 8 ? splitsList.length : Math.max(8, realFit), 2);
+
+      const usedH = drawSplitsTable(ctx, splitsList, sectionMargin, cy, sectionW, finalMaxRows);
+      cy += usedH + 20;
     }
   }
 
-  // GPX Track Minimap
+  if (hasLaps) {
+    let remainingH = footerTopY - cy;
+    if (remainingH >= 100) {
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillStyle = '#9ca3af';
+      ctx.textAlign = 'center';
+      fillTextSpaced(ctx, 'VUELTAS', W / 2, cy, 3);
+      cy += sectionTitleH;
+
+      remainingH = footerTopY - cy;
+      const reserveBelow = hasGpx ? 200 : 0;
+      const realFit = Math.floor((remainingH - reserveBelow - headerH - 8) / rowH);
+      const finalMaxRows = Math.max(lapsList.length <= 8 ? lapsList.length : Math.max(8, realFit), 2);
+
+      const usedH = drawLapsTable(ctx, lapsList, sectionMargin, cy, sectionW, finalMaxRows);
+      cy += usedH + 20;
+    }
+  }
+
   if (hasGpx) {
-    cy += 10;
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(cardX + 80, cy);
-    ctx.lineTo(cardX + cardW - 80, cy);
-    ctx.stroke();
-    cy += 28;
-
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.fillText('RECORRIDO', W / 2, cy);
-    cy += 24;
-
-    const mapH = 280;
-    drawTrackMinimap(ctx, gpxPoints, cardX + 60, cy, cardW - 120, mapH);
-    cy += mapH + 16;
-
-    const infoParts = [];
-    if (distance) infoParts.push(`${distance} km`);
-    if (elevationGain) infoParts.push(`D+ ${elevationGain} m`);
-    if (infoParts.length > 0) {
-      ctx.font = '22px sans-serif';
-      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    let remainingH = footerTopY - cy;
+    if (remainingH >= 200) {
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillStyle = '#9ca3af';
       ctx.textAlign = 'center';
-      ctx.fillText(infoParts.join('    '), W / 2, cy);
-      cy += 30;
+      const headerLabel = hasEle ? 'RECORRIDO Y PERFIL' : 'RECORRIDO';
+      fillTextSpaced(ctx, headerLabel, W / 2, cy, 3);
+      cy += 28;
+
+      remainingH = footerTopY - cy;
+
+      if (hasEle && remainingH >= 380) {
+        const mapH = 200;
+        const profileH = 160;
+        drawTrackMinimap(ctx, gpxPoints, sectionMargin, cy, sectionW, mapH);
+        cy += mapH + 14;
+        drawElevationProfile(ctx, gpxPoints, sectionMargin, cy, sectionW, profileH);
+        cy += profileH;
+      } else if (hasEle) {
+        const h = Math.min(remainingH - 16, 200);
+        drawElevationProfile(ctx, gpxPoints, sectionMargin, cy, sectionW, h);
+        cy += h;
+      } else {
+        const h = Math.min(remainingH - 16, 240);
+        drawTrackMinimap(ctx, gpxPoints, sectionMargin, cy, sectionW, h);
+        cy += h;
+      }
     }
   }
 
-  // ==================== TOP BRANDING ====================
+  // ==================== FOOTER ====================
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#9ca3af';
   ctx.textAlign = 'center';
-  ctx.font = 'bold 40px sans-serif';
-  ctx.fillStyle = '#fff';
-  ctx.fillText('VIRIATO TEMPO', W / 2, 180);
-  ctx.font = 'bold 18px sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  ctx.fillText('POWERED BY VIRIATO TERRA', W / 2, 214);
-
-  // ==================== BOTTOM ====================
-  ctx.font = '22px sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.3)';
-  ctx.textAlign = 'center';
-  ctx.fillText('viriatotempo.onrender.com', W / 2, H - 80);
+  fillTextSpaced(ctx, 'VIRIATOTEMPO.COM', W / 2, H - 50, 3);
 
   return canvas.toBuffer('image/png');
 }

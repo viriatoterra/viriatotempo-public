@@ -1327,6 +1327,24 @@ app.get('/api/public/share-image/:eventId/:bib', async (req, res) => {
       if (parsed.points && parsed.points.length >= 2) gpxPoints = parsed.points;
     }
 
+    // Vueltas (laps) del corredor con offset aplicado
+    const eventLaps = laps.filter(l => l.eventId === eventId).sort((a, b) => a.lapNumber - b.lapNumber);
+    const runnerLaps = [];
+    let prevCumMs = 0;
+    for (const lap of eventLaps) {
+      const entry = (lap.data || []).find(d => String(d.bib) === String(bib));
+      if (!entry || !entry.time) continue;
+      const rawCumMs = timeToMsHelper(entry.time);
+      const adjustedCumMs = Math.max(0, rawCumMs - raceOffsetMs);
+      const lapTimeMs = prevCumMs > 0 ? Math.max(0, adjustedCumMs - prevCumMs) : adjustedCumMs;
+      runnerLaps.push({
+        lapNumber: lap.lapNumber,
+        cumulative: msToTimeHelper(adjustedCumMs),
+        lapTime: msToTimeHelper(lapTimeMs),
+      });
+      prevCumMs = adjustedCumMs;
+    }
+
     // Tiempo oficial (con offset aplicado)
     const officialTime = result?.time || applyOffsetMs(result?.chipTime) || null;
 
@@ -1338,11 +1356,13 @@ app.get('/api/public/share-image/:eventId/:bib', async (req, res) => {
       team: participant.team || null,
       category: participant.category || null,
       chipTime: officialTime,
+      officialTime,
       position: result?.position || null,
       categoryPosition,
       genderPosition,
       status,
       splits: runnerSplits,
+      laps: runnerLaps,
     };
 
     const eventInfo = {
@@ -1354,7 +1374,7 @@ app.get('/api/public/share-image/:eventId/:bib', async (req, res) => {
 
     const posterUrl = event.poster || event.image || null;
 
-    const pngBuffer = await generateShareImage(detail, eventInfo, raceName, distance, posterUrl, gpxPoints, elevationGain);
+    const pngBuffer = await generateShareImage(detail, eventInfo, raceName, distance, posterUrl, gpxPoints, elevationGain, runnerLaps);
 
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'no-cache');

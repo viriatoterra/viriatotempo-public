@@ -34,14 +34,15 @@ public = {
     'events': data.get('events', []),
     'participants': data.get('participants', []),
     'results': data.get('results', []),
-    'splits': data.get('splits', [])
+    'splits': data.get('splits', []),
+    'laps': data.get('laps', [])
 }
 with open('$DEPLOY_DATA', 'w') as f:
     json.dump(public, f)
-print(f'   Events: {len(public[\"events\"])}, Participants: {len(public[\"participants\"])}, Results: {len(public[\"results\"])}, Splits: {len(public[\"splits\"])}')
+print(f'   Events: {len(public[\"events\"])}, Participants: {len(public[\"participants\"])}, Results: {len(public[\"results\"])}, Splits: {len(public[\"splits\"])}, Laps: {len(public[\"laps\"])}')
 "
 elif command -v jq &> /dev/null; then
-  jq '{events, participants, results, splits}' "$DATA_FILE" > "$DEPLOY_DATA"
+  jq '{events, participants, results, splits, laps}' "$DATA_FILE" > "$DEPLOY_DATA"
 else
   echo "⚠️ Ni python3 ni jq disponibles — copiando data.json completo"
   cp "$DATA_FILE" "$DEPLOY_DATA"

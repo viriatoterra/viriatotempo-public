@@ -21,7 +21,14 @@ if (fs.existsSync(webDist)) {
   app.use(express.static(webDist));
 }
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  // Guardar el buffer crudo del /sync para escribirlo a disco tal cual,
+  // sin re-stringificar 37MB (evita un pico extra de memoria en la instancia)
+  verify: (req, res, buf) => {
+    if (req.path === '/sync') req.rawBody = buf;
+  },
+}));
 
 // ============ DATA ============
 let events = [];
@@ -72,8 +79,15 @@ app.post('/sync', (req, res) => {
     splits = data.splits || [];
     laps = data.laps || [];
 
-    // Guardar a disco para persistir entre reinicios de Render
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf-8');
+    // Guardar a disco para persistir entre reinicios de Render.
+    // Se escribe el buffer crudo recibido (sin JSON.stringify) para no duplicar
+    // ~37MB en memoria durante el sync — causa de OOM en instancias de 512MB.
+    if (req.rawBody) {
+      fs.writeFileSync(DATA_FILE, req.rawBody);
+      req.rawBody = null;
+    } else {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf-8');
+    }
 
     console.log(`🔄 Sync: ${events.length} ev, ${participants.length} part, ${results.length} res, ${splits.length} splits, ${laps.length} laps`);
     res.json({ message: 'Datos sincronizados', events: events.length, participants: participants.length, results: results.length, splits: splits.length, laps: laps.length });

@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { generateShareImage } from './share-image.js';
+import http from 'http';
+import { Server as SocketIOServer } from 'socket.io';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1437,6 +1439,108 @@ app.get('/api/public/proxy-image', async (req, res) => {
   }
 });
 
+// ============================================================================
+// LIVE EN LA NUBE (sep 2026): el Mac (ViriatoTempo) empuja aquí las lecturas
+// del TimingPanel y el reloj de carrera; los móviles del público abren
+// /live/:id (o /display/:id) SIN pasar por el Mac ni por túneles.
+//   POST   /live/:eventId         {mode, readings, splits, clock}   (X-Sync-Token)
+//   POST   /live/:eventId/clock   {running, elapsedMs, startTs, mode}
+//   DELETE /live/:eventId
+//   GET    /api/v1/live-state/:eventId  /api/v1/live-clock/:eventId   (público)
+// Socket.IO: reemite 'timing:live-update' | 'timing:clock' | 'timing:live-clear'
+// a las páginas conectadas (mismo contrato que el backend del Mac).
+// La página Live es el bundle Vite del panel construido con base /app/
+// (carpeta live-app/), que consume el subconjunto /api/v1 de abajo.
+// ============================================================================
+const httpServer = http.createServer(app);
+const io = new SocketIOServer(httpServer, { cors: { origin: '*' }, transports: ['websocket', 'polling'] });
+const liveStates = new Map();
+const liveClocks = new Map();
+
+const liveAuth = (req, res, next) => {
+  if (req.headers['x-sync-token'] !== SYNC_TOKEN) return res.status(401).json({ message: 'Token inválido' });
+  next();
+};
+app.post('/live/:eventId', liveAuth, (req, res) => {
+  const eventId = String(req.params.eventId);
+  const data = { ...(req.body || {}), eventId: parseInt(eventId), receivedAt: Date.now() };
+  liveStates.set(eventId, data);
+  if (data.clock && data.clock.elapsedMs != null) liveClocks.set(eventId, { ...data.clock, eventId: data.eventId, receivedAt: Date.now() });
+  io.emit('timing:live-update', data);
+  res.json({ ok: true, readings: Array.isArray(data.readings) ? data.readings.length : 0, clients: io.engine.clientsCount });
+});
+app.post('/live/:eventId/clock', liveAuth, (req, res) => {
+  const eventId = String(req.params.eventId);
+  const data = { ...(req.body || {}), eventId: parseInt(eventId), receivedAt: Date.now() };
+  liveClocks.set(eventId, data);
+  io.emit('timing:clock', data);
+  res.json({ ok: true, clients: io.engine.clientsCount });
+});
+app.delete('/live/:eventId', liveAuth, (req, res) => {
+  const eventId = String(req.params.eventId);
+  liveStates.delete(eventId);
+  io.emit('timing:live-clear', { eventId: parseInt(eventId) });
+  res.json({ ok: true });
+});
+app.get('/api/v1/live-state/:eventId', (req, res) => {
+  const st = liveStates.get(String(req.params.eventId));
+  if (!st) return res.json({ active: false });
+  res.json({ active: true, ...st });
+});
+app.get('/api/v1/live-clock/:eventId', (req, res) => {
+  const c = liveClocks.get(String(req.params.eventId));
+  if (!c) return res.json({ active: false });
+  res.json({ active: true, ...c, elapsedMs: c.running ? c.elapsedMs + (Date.now() - c.receivedAt) : c.elapsedMs, serverNow: Date.now() });
+});
+app.get('/api/v1/live/status', (req, res) => {
+  res.json({ ok: true, clients: io.engine.clientsCount, events: [...liveStates.keys()], serverNow: Date.now() });
+});
+
+// --- Subconjunto /api/v1 que usan las páginas Live/Display del bundle Vite ---
+app.get('/api/v1/events/:id', (req, res) => {
+  const event = events.find(e => e.id === parseInt(req.params.id));
+  if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+  const { bannerImage, gpxTracks, ...rest } = event;
+  res.json({ ...rest, participants: participants.filter(p => p.eventId === event.id).length });
+});
+// Participantes SIN datos personales (solo lo que pinta el Live: nombre, dorsal, categoría, club, sexo, recorrido)
+app.get('/api/v1/participants', (req, res) => {
+  const eventId = parseInt(req.query.eventId);
+  if (!eventId) return res.json([]);
+  let list = participants.filter(p => p.eventId === eventId);
+  if (req.query.raceId) list = list.filter(p => p.raceId === req.query.raceId);
+  res.json(list.map(p => ({
+    id: p.id, eventId: p.eventId, firstName: p.firstName, lastName: p.lastName, gender: p.gender,
+    category: p.category, bib: p.bib, team: p.team, raceId: p.raceId, province: p.province,
+    isLocal: !!p.isLocal, adapted: !!p.adapted, members: p.members || undefined, waveId: p.waveId || null,
+  })));
+});
+app.get('/api/v1/results/splits/:eventId', (req, res) => {
+  const eventId = parseInt(req.params.eventId);
+  res.json(splits.filter(s => s.eventId === eventId).sort((a, b) => a.splitIndex - b.splitIndex));
+});
+app.get('/api/v1/results/laps/:eventId', (req, res) => {
+  const eventId = parseInt(req.params.eventId);
+  res.json(laps.filter(l => l.eventId === eventId).sort((a, b) => a.lapNumber - b.lapNumber));
+});
+app.get('/api/v1/results/team-classification/:eventId', (req, res) => {
+  const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+  res.redirect(307, `/api/public/results/${req.params.eventId}/team-classification${qs}`);
+});
+app.get('/api/v1/tunnel/status', (req, res) => res.json({ active: false, url: null }));
+
+// --- Bundle Vite (live-app/, base /app/) + atajos /live/:id y /display/:id ---
+const liveAppDist = path.join(__dirname, 'live-app');
+if (fs.existsSync(liveAppDist)) {
+  app.use('/app', express.static(liveAppDist, { maxAge: '365d', immutable: true, index: false }));
+  app.get(['/app', '/app/*'], (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.sendFile(path.join(liveAppDist, 'index.html'));
+  });
+  app.get('/live/:id', (req, res) => res.redirect(302, `/app/live/${req.params.id}`));
+  app.get('/display/:id', (req, res) => res.redirect(302, `/app/display/${req.params.id}`));
+}
+
 // SPA catch-all: rutas que no son API ni archivos estáticos → index.html
 if (fs.existsSync(webDist)) {
   app.get('*', (req, res) => {
@@ -1444,7 +1548,7 @@ if (fs.existsSync(webDist)) {
   });
 }
 
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`🚀 ViriatoTempo Public API running on port ${PORT}`);
   console.log(`📊 ${events.length} eventos, ${participants.length} participantes, ${results.length} resultados`);
 });

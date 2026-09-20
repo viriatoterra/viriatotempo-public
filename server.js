@@ -1476,6 +1476,15 @@ app.post('/live/:eventId/clock', liveAuth, (req, res) => {
   io.emit('timing:clock', data);
   res.json({ ok: true, clients: io.engine.clientsCount });
 });
+// Puntos intermedios (PDA/import en el Mac) → los móviles los reciben al momento
+const liveSplits = new Map();
+app.post('/live/:eventId/splits', liveAuth, (req, res) => {
+  const eventId = String(req.params.eventId);
+  const list = Array.isArray(req.body?.splits) ? req.body.splits : [];
+  liveSplits.set(eventId, list);
+  io.emit('timing:split-update', { eventId: parseInt(eventId), splits: list });
+  res.json({ ok: true, splits: list.length, clients: io.engine.clientsCount });
+});
 app.delete('/live/:eventId', liveAuth, (req, res) => {
   const eventId = String(req.params.eventId);
   liveStates.delete(eventId);
@@ -1517,6 +1526,8 @@ app.get('/api/v1/participants', (req, res) => {
 });
 app.get('/api/v1/results/splits/:eventId', (req, res) => {
   const eventId = parseInt(req.params.eventId);
+  const live = liveSplits.get(String(eventId));
+  if (live) return res.json(live);
   res.json(splits.filter(s => s.eventId === eventId).sort((a, b) => a.splitIndex - b.splitIndex));
 });
 app.get('/api/v1/results/laps/:eventId', (req, res) => {

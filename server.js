@@ -1820,6 +1820,11 @@ if (fs.existsSync(liveAppDist)) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(liveAppDist, 'index.html'));
   });
+  // Assets públicos que el bundle referencia en la raíz (/logo.svg en la entrega de dorsales, favicon…)
+  for (const f of ['logo.svg', 'rts-logo.svg', 'favicon.png', 'apple-touch-icon.png']) {
+    const fp = path.join(liveAppDist, f);
+    if (fs.existsSync(fp)) app.get(`/${f}`, (req, res) => res.sendFile(fp));
+  }
   app.get('/live/:id', (req, res) => res.redirect(302, `/app/live/${req.params.id}`));
   app.get('/display/:id', (req, res) => res.redirect(302, `/app/display/${req.params.id}`));
 }

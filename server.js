@@ -80,6 +80,10 @@ app.post('/sync', (req, res) => {
     results = data.results;
     splits = data.splits || [];
     laps = data.laps || [];
+    // Marcas de entrega hechas en la nube después del último pull del Mac: reaplicar
+    const sinceSeq = parseInt(req.headers['x-pickup-seq']) || 0;
+    let reapplied = 0; for (const c of pickupChanges) if (c.seq > sinceSeq && applyPickupChange(c)) reapplied++;
+    if (reapplied) console.log(`📦 Sync: ${reapplied} marcas de entrega posteriores al seq ${sinceSeq} reaplicadas`);
 
     // Guardar a disco para persistir entre reinicios de Render.
     // Se escribe el buffer crudo recibido (sin JSON.stringify) para no duplicar
@@ -96,6 +100,274 @@ app.post('/sync', (req, res) => {
   } catch (err) {
     res.status(500).json({ message: 'Error sincronizando: ' + err.message });
   }
+});
+
+
+// ============ ENTREGA DE DORSALES EN LA NUBE ============
+// Los móviles de los operadores trabajan contra ESTE servidor (sin el Mac).
+// Mismas rutas /api/v1/bib-pickup/* que el Mac (código copiado de
+// backend/src/routes/bib-pickup.js al generar este bloque). Cada marca queda
+// en un registro con nº de secuencia que el Mac se trae con
+// GET /api/v1/bib-pickup/changes?since=N (X-Sync-Token) y aplica a sus datos.
+// El registro se guarda en pickup-changes.json y se reaplica al arrancar
+// (los participantes vienen del último /sync del Mac).
+import crypto from 'crypto';
+const PICKUP_LOG_FILE = path.join(__dirname, 'pickup-changes.json');
+let pickupChanges = []; // [{seq, at, eventId, participantId, bib, kind, bibPickup, talla, bolsa, by}]
+let pickupSeq = 0;
+function persistPickupLog() {
+  try { fs.writeFileSync(PICKUP_LOG_FILE, JSON.stringify({ seq: pickupSeq, changes: pickupChanges.slice(-5000) })); } catch (e) { console.log('⚠️ pickup log:', e.message); }
+}
+function logPickupChange(participant, kind) {
+  pickupSeq++;
+  pickupChanges.push({ seq: pickupSeq, at: new Date().toISOString(), eventId: participant.eventId, participantId: participant.id, bib: participant.bib || null, kind,
+    bibPickup: participant.bibPickup || null, talla: participant.talla ?? null, bolsa: participant.bolsa ?? null });
+  if (pickupChanges.length > 5000) pickupChanges = pickupChanges.slice(-5000);
+  persistPickupLog();
+}
+function applyPickupChange(c) {
+  const p = participants.find(x => x.id === c.participantId && x.eventId === c.eventId);
+  if (!p) return false;
+  if (c.kind === 'bibPickup') p.bibPickup = c.bibPickup;
+  else if (c.kind === 'fields') { if (c.talla !== undefined) p.talla = c.talla; if (c.bolsa !== undefined) p.bolsa = c.bolsa; }
+  return true;
+}
+function loadPickupLog() {
+  try {
+    if (!fs.existsSync(PICKUP_LOG_FILE)) return;
+    const d = JSON.parse(fs.readFileSync(PICKUP_LOG_FILE, 'utf-8'));
+    pickupSeq = d.seq || 0; pickupChanges = d.changes || [];
+    // Reaplicar sobre los participantes cargados (por si Render reinició tras marcas no sincronizadas)
+    let n = 0; for (const c of pickupChanges) if (applyPickupChange(c)) n++;
+    console.log(`📦 Entrega de dorsales: ${pickupChanges.length} marcas en registro (seq ${pickupSeq}), ${n} reaplicadas`);
+  } catch (e) { console.log('⚠️ pickup log load:', e.message); }
+}
+loadPickupLog();
+
+// Sesiones de operador (en memoria)
+const sessions = new Map();
+function generateToken() { return crypto.randomBytes(32).toString('hex'); }
+function cleanExpiredSessions() { const maxAge = 12 * 60 * 60 * 1000, now = Date.now(); for (const [t, s] of sessions) if (now - s.createdAt > maxAge) sessions.delete(t); }
+function requireSession(req, res, next) {
+  const token = req.headers['x-pickup-token'];
+  if (!token || !sessions.has(token)) return res.status(401).json({ message: 'Sesión no válida. Inicia sesión de nuevo.' });
+  req.pickupSession = sessions.get(token); next();
+}
+const pickupAuth = (req, res, next) => { if (req.headers['x-sync-token'] !== SYNC_TOKEN) return res.status(401).json({ message: 'Token inválido' }); next(); };
+
+// El Mac se trae las marcas nuevas
+app.get('/api/v1/bib-pickup/changes', pickupAuth, (req, res) => {
+  const since = parseInt(req.query.since) || 0;
+  const changes = pickupChanges.filter(c => c.seq > since);
+  res.json({ changes, lastSeq: pickupSeq, total: pickupChanges.length, sessions: sessions.size });
+});
+// Estado (sin token): para comprobar que la nube tiene el evento y operadores
+app.get('/api/v1/bib-pickup/cloud-status', (req, res) => {
+  const evs = events.filter(e => e.bibPickupPin && (e.bibPickupOperators || []).length).map(e => ({ id: e.id, name: e.name, operators: (e.bibPickupOperators || []).length,
+    participants: participants.filter(p => p.eventId === e.id).length, delivered: participants.filter(p => p.eventId === e.id && p.bibPickup?.delivered).length }));
+  res.json({ ok: true, lastSeq: pickupSeq, changes: pickupChanges.length, events: evs });
+});
+app.get('/entrega-dorsales', (req, res) => res.redirect(302, '/app/entrega-dorsales'));
+
+app.post('/api/v1/bib-pickup/auth', (req, res) => {
+  const { email, pin } = req.body;
+  if (!email || !pin) return res.status(400).json({ message: 'Email y PIN requeridos' });
+
+  cleanExpiredSessions();
+
+  // Find event with matching PIN and operator email
+  const normalizedEmail = email.trim().toLowerCase();
+  const event = events.find(e =>
+    e.bibPickupPin === pin &&
+    (e.bibPickupOperators || []).some(op => op.email.trim().toLowerCase() === normalizedEmail)
+  );
+
+  if (!event) {
+    return res.status(401).json({ message: 'Email o PIN incorrecto' });
+  }
+
+  const operator = event.bibPickupOperators.find(op => op.email.trim().toLowerCase() === normalizedEmail);
+  const token = generateToken();
+  sessions.set(token, {
+    eventId: event.id,
+    operatorName: operator.name || email,
+    email: normalizedEmail,
+    createdAt: Date.now(),
+  });
+
+  res.json({
+    token,
+    eventId: event.id,
+    eventName: event.name,
+    operatorName: operator.name || email,
+    races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance })),
+    customFields: event.customFields || [],
+    bolsaLabel: event.bolsaLabel || null,
+  });
+});
+
+app.post('/api/v1/bib-pickup/logout', (req, res) => {
+  const token = req.headers['x-pickup-token'];
+  if (token) sessions.delete(token);
+  res.json({ ok: true });
+});
+
+app.get('/api/v1/bib-pickup/participants/:eventId', requireSession, (req, res) => {
+  const eventId = parseInt(req.params.eventId);
+  if (eventId !== req.pickupSession.eventId) {
+    return res.status(403).json({ message: 'No tienes acceso a este evento' });
+  }
+
+  const { q, raceId, status } = req.query;
+  let filtered = participants.filter(p => p.eventId === eventId);
+
+  // Filter by race
+  if (raceId) filtered = filtered.filter(p => p.raceId === raceId);
+
+  // Filter by delivery status
+  if (status === 'delivered') filtered = filtered.filter(p => p.bibPickup?.delivered);
+  else if (status === 'pending') filtered = filtered.filter(p => !p.bibPickup?.delivered);
+
+  // Search
+  if (q && q.trim().length >= 1) {
+    const query = q.toLowerCase().trim();
+    filtered = filtered.filter(p => {
+      const fullName = `${p.firstName} ${p.lastName}`.toLowerCase();
+      return fullName.includes(query) ||
+        (p.dni && p.dni.toLowerCase().includes(query)) ||
+        (p.bib && String(p.bib).includes(query));
+    });
+  }
+
+  // Sort: pending first, then by bib
+  filtered.sort((a, b) => {
+    const aD = a.bibPickup?.delivered ? 1 : 0;
+    const bD = b.bibPickup?.delivered ? 1 : 0;
+    if (aD !== bD) return aD - bD;
+    return parseInt(a.bib || '9999') - parseInt(b.bib || '9999');
+  });
+
+  // Limit results
+  const limited = filtered.slice(0, 200);
+
+  const mapped = limited.map(p => ({
+    id: p.id,
+    bib: p.bib,
+    firstName: p.firstName,
+    lastName: p.lastName,
+    dni: p.dni || null,
+    phone: p.phone || null,
+    gender: p.gender || null,
+    birthDate: p.birthDate || null,
+    team: p.team || null,
+    category: p.category || null,
+    province: p.province || null,
+    licencia: p.licencia || null,
+    federado: p.federado || false,
+    isLocal: p.isLocal || false,
+    raceId: p.raceId || null,
+    talla: p.talla || null,
+    bolsa: p.bolsa || null,
+    customData: p.customData || {},
+    bibPickup: p.bibPickup || null,
+  }));
+
+  res.json(mapped);
+});
+
+app.get('/api/v1/bib-pickup/stats/:eventId', requireSession, (req, res) => {
+  const eventId = parseInt(req.params.eventId);
+  if (eventId !== req.pickupSession.eventId) {
+    return res.status(403).json({ message: 'No tienes acceso a este evento' });
+  }
+
+  const { raceId } = req.query;
+  let filtered = participants.filter(p => p.eventId === eventId);
+  if (raceId) filtered = filtered.filter(p => p.raceId === raceId);
+
+  const total = filtered.length;
+  const delivered = filtered.filter(p => p.bibPickup?.delivered).length;
+
+  const event = events.find(e => e.id === eventId);
+  const byRace = (event?.races || []).map(race => {
+    const rp = filtered.filter(p => p.raceId === race.id);
+    return {
+      raceId: race.id,
+      raceName: race.name,
+      total: rp.length,
+      delivered: rp.filter(p => p.bibPickup?.delivered).length,
+    };
+  });
+
+  // Per-operator breakdown
+  const operatorCounts = {};
+  filtered.forEach(p => {
+    if (p.bibPickup?.delivered && p.bibPickup.deliveredBy) {
+      const name = p.bibPickup.deliveredBy;
+      operatorCounts[name] = (operatorCounts[name] || 0) + 1;
+    }
+  });
+  const byOperator = Object.entries(operatorCounts)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+
+  res.json({ total, delivered, pending: total - delivered, byRace, byOperator });
+});
+
+app.put('/api/v1/bib-pickup/deliver/:participantId', requireSession, (req, res) => {
+  const id = parseInt(req.params.participantId);
+  const participant = participants.find(p => p.id === id);
+  if (!participant) return res.status(404).json({ message: 'Participante no encontrado' });
+  if (participant.eventId !== req.pickupSession.eventId) {
+    return res.status(403).json({ message: 'No tienes acceso a este participante' });
+  }
+
+  const { notes } = req.body;
+
+  participant.bibPickup = {
+    delivered: true,
+    deliveredAt: new Date().toISOString(),
+    deliveredBy: req.pickupSession.operatorName,
+    notes: notes || '',
+  };
+
+  logPickupChange(participant, 'bibPickup');
+  res.json({ ok: true, bibPickup: participant.bibPickup });
+});
+
+app.put('/api/v1/bib-pickup/undeliver/:participantId', requireSession, (req, res) => {
+  const id = parseInt(req.params.participantId);
+  const participant = participants.find(p => p.id === id);
+  if (!participant) return res.status(404).json({ message: 'Participante no encontrado' });
+  if (participant.eventId !== req.pickupSession.eventId) {
+    return res.status(403).json({ message: 'No tienes acceso a este participante' });
+  }
+
+  participant.bibPickup = {
+    delivered: false,
+    deliveredAt: null,
+    deliveredBy: null,
+    notes: participant.bibPickup?.notes || '',
+  };
+
+  logPickupChange(participant, 'bibPickup');
+  res.json({ ok: true, bibPickup: participant.bibPickup });
+});
+
+app.put('/api/v1/bib-pickup/participant/:participantId', requireSession, (req, res) => {
+  const id = parseInt(req.params.participantId);
+  const participant = participants.find(p => p.id === id);
+  if (!participant) return res.status(404).json({ message: 'Participante no encontrado' });
+  if (participant.eventId !== req.pickupSession.eventId) {
+    return res.status(403).json({ message: 'No tienes acceso a este participante' });
+  }
+
+  const { talla, bolsa } = req.body;
+  if (talla !== undefined) participant.talla = talla;
+  if (bolsa !== undefined) participant.bolsa = bolsa;
+
+  logPickupChange(participant, 'fields');
+  res.json({ ok: true });
 });
 
 // ============ PUBLIC API ============

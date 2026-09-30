@@ -230,9 +230,11 @@ app.get('/api/v1/bib-pickup/participants/:eventId', requireSession, (req, res) =
 
   // Search
   if (q && q.trim().length >= 1) {
-    const query = q.toLowerCase().trim();
+    // Búsqueda sin tildes ni mayúsculas (JOSE encuentra JOSÉ, Nuñez ↔ Núñez)
+    const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const query = norm(q);
     filtered = filtered.filter(p => {
-      const fullName = `${p.firstName} ${p.lastName}`.toLowerCase();
+      const fullName = norm(`${p.firstName} ${p.lastName}`);
       return fullName.includes(query) ||
         (p.dni && p.dni.toLowerCase().includes(query)) ||
         (p.bib && String(p.bib).includes(query));

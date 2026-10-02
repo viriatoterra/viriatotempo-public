@@ -144,6 +144,28 @@ function loadPickupLog() {
 }
 loadPickupLog();
 
+
+// Nombre canónico de operador: el mismo operador aparece como "Pepe", "PEPE",
+// "PEPE MAC", "Pepe Muñoz" o "Admin" (panel) → se agrupa como "Pepe". Resto:
+// se agrupa sin distinguir mayúsculas/tildes, mostrando la primera grafía.
+const OPERATOR_ALIASES = { 'pepe': 'Pepe', 'pepe mac': 'Pepe', 'pepe munoz': 'Pepe', 'pepe muñoz': 'Pepe', 'admin': 'Pepe', 'jose munoz': 'Pepe', 'jose muñoz': 'Pepe', 'melani': 'Melani' };
+function canonicalOperator(name) {
+  const raw = String(name || '').trim(); if (!raw) return '';
+  const key = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ');
+  return OPERATOR_ALIASES[key] || raw;
+}
+function countByOperator(list) {
+  const counts = {}; const shown = {};
+  for (const p of list) {
+    if (!(p.bibPickup?.delivered && p.bibPickup.deliveredBy)) continue;
+    const canon = canonicalOperator(p.bibPickup.deliveredBy);
+    const k = canon.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (!shown[k]) shown[k] = canon;
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  return Object.entries(counts).map(([k, count]) => ({ name: shown[k], count })).sort((a, b) => b.count - a.count);
+}
+
 // Sesiones de operador (en memoria)
 const sessions = new Map();
 function generateToken() { return crypto.randomBytes(32).toString('hex'); }
@@ -302,16 +324,7 @@ app.get('/api/v1/bib-pickup/stats/:eventId', requireSession, (req, res) => {
   });
 
   // Per-operator breakdown
-  const operatorCounts = {};
-  filtered.forEach(p => {
-    if (p.bibPickup?.delivered && p.bibPickup.deliveredBy) {
-      const name = p.bibPickup.deliveredBy;
-      operatorCounts[name] = (operatorCounts[name] || 0) + 1;
-    }
-  });
-  const byOperator = Object.entries(operatorCounts)
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count);
+  const byOperator = countByOperator(filtered);
 
   res.json({ total, delivered, pending: total - delivered, byRace, byOperator });
 });

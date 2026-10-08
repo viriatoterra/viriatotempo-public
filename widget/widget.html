@@ -325,7 +325,7 @@
     if (hasAlt) cols.push({ k: 'alt', l: S.event.rankBy === 'net' ? 'T. Bruto' : 'T. Neto', num: 1 });
     if (hasPen) cols.push({ k: 'pen', l: 'Penaliz.', num: 1 });
     if (hasPace) cols.push({ k: 'pace', l: RUN_TYPES.test(S.event.type || 'running') ? 'Ritmo' : 'km/h', num: 1 });
-    if (hasStart) cols.push({ k: 'start', l: 'Salida', num: 1 });
+    // (hora de salida no se muestra: decisión del usuario 8-oct)
     (S.event.splits || []).forEach(function (sp) { if (splitIdx[sp.splitIndex]) cols.push({ k: 'split', i: sp.splitIndex, l: sp.name, num: 1 }); });
     Object.keys(lapNums).map(Number).sort(function (a, b) { return a - b; }).forEach(function (n) {
       var nm = race && race.lapNames && race.lapNames[n - 1];

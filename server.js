@@ -1227,7 +1227,7 @@ app.get('/api/public/results/:eventId/pdf', (req, res) => {
     if (hasAlt) cols.push({ k: 'alt', l: rankNet ? 'T. Bruto' : 'T. Neto', w: 46 });
     if (hasPen) cols.push({ k: 'pen', l: 'Penaliz.', w: 42 });
     if (hasPace) cols.push({ k: 'pace', l: isRun ? 'Ritmo' : 'km/h', w: 34 });
-    if (hasStart) cols.push({ k: 'start', l: 'Salida', w: 44 });
+    // (hora de salida no se muestra: decisión del usuario 8-oct)
     splitIdx.forEach(sp => cols.push({ k: 'split', i: sp.splitIndex, l: sp.name || `Punto ${sp.splitIndex + 1}`, w: 42 }));
     const lapNames = race?.lapNames || [];
     lapNums.forEach(n => cols.push({ k: 'lap', n, l: lapNames[n - 1] || `V${n}`, w: 40 }));

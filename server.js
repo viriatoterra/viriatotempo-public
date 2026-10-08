@@ -661,6 +661,11 @@ app.get('/api/public/results/:eventId', (req, res) => {
         position: r.position || null,
         categoryPosition: r.categoryPosition || null,
         genderPosition: r.genderPosition || null,
+        // Puesto OFICIAL guardado por el Mac (por recorrido y según event.rankBy)
+        // — los de arriba se recalculan más abajo por neto y mezclando recorridos
+        racePosition: r.chipTime && !r.isOTL ? (r.position || null) : null,
+        penalty: r.penalty || null,
+        isOTL: r.isOTL || false,
         status: !r.chipTime && !r.startTime ? 'DNS' : !r.chipTime ? 'DNF' : 'Finalizado',
       };
     }).filter(Boolean);
@@ -717,6 +722,7 @@ app.get('/api/public/results/:eventId', (req, res) => {
         distance: event.distance,
         elevationGain: event.elevationGain || null,
         image: event.image || null,
+        rankBy: event.rankBy === 'net' ? 'net' : 'gun',
         races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, elevationGain: r.elevationGain || null, rankingTier: r.rankingTier || null })),
       },
       results: enriched,
@@ -1826,6 +1832,18 @@ app.get('/api/v1/results/team-classification/:eventId', (req, res) => {
   res.redirect(307, `/api/public/results/${req.params.eventId}/team-classification${qs}`);
 });
 app.get('/api/v1/tunnel/status', (req, res) => res.json({ active: false, url: null }));
+
+// --- Widget de resultados para incrustar en otras webs (WordPress…) ---
+// <div class="viriatotempo-widget" data-event="42"></div><script src="/widget.js" async></script>
+const widgetDir = path.join(__dirname, 'widget');
+app.get('/widget.js', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.type('application/javascript').sendFile(path.join(widgetDir, 'embed.js'));
+});
+app.get(['/widget', '/widget/:eventId'], (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(widgetDir, 'widget.html'));
+});
 
 // --- Bundle Vite (live-app/, base /app/) + atajos /live/:id y /display/:id ---
 const liveAppDist = path.join(__dirname, 'live-app');

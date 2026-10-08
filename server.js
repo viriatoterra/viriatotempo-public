@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { generateShareImage } from './share-image.js';
+import PDFDocument from 'pdfkit';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 
@@ -1068,6 +1069,148 @@ app.get('/api/public/participants/:eventId', (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /api/public/results/:eventId/pdf?raceId=&filter=all|g:male|g:female|c:<categoría>
+// PDF de la clasificación que se ve en el widget. Puestos OFICIALES como en el
+// Mac: por recorrido, en el orden del puesto guardado y con event.rankBy.
+// IMPORTANT: Must be BEFORE /:eventId/:bib
+app.get('/api/public/results/:eventId/pdf', (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ message: 'Evento no encontrado' });
+    const races = event.races || [];
+    const raceId = req.query.raceId || (races[0] ? races[0].id : null);
+    const race = races.find(r => r.id === raceId) || null;
+    const filter = String(req.query.filter || 'all');
+    const rankNet = event.rankBy === 'net';
+    const tms = (t) => {
+      if (!t) return null;
+      const p = String(t).split(':'); if (p.length !== 3) return null;
+      return (parseInt(p[0]) * 3600 + parseInt(p[1]) * 60 + parseFloat(p[2])) * 1000;
+    };
+    const fmt = (ms) => {
+      if (ms == null) return '';
+      const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+      const pad = (n) => String(n).padStart(2, '0');
+      return h > 0 ? `${h}:${pad(m)}:${pad(x)}` : `${m}:${pad(x)}`;
+    };
+
+    const rows = results
+      .filter(r => r.eventId === eventId && (!race || r.raceId === race.id))
+      .map(r => {
+        const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
+        if (!p) return null;
+        const base = rankNet ? (r.time || r.chipTime) : (r.chipTime || r.time);
+        const t = tms(base);
+        return {
+          r, p, fin: !!r.chipTime && !r.isOTL,
+          time: t == null ? null : t + (tms(r.penalty) || 0),
+          status: r.chipTime ? (r.isOTL ? 'F.T.' : 'OK') : (r.startTime ? 'DNF' : 'DNS'),
+        };
+      }).filter(Boolean);
+    const fin = rows.filter(x => x.fin).sort((a, b) =>
+      ((a.r.position || 1e9) - (b.r.position || 1e9)) || ((a.time || 0) - (b.time || 0)));
+    const g = {}, c = {};
+    fin.forEach((x, i) => {
+      x.pos = x.r.position || i + 1;
+      if (x.p.gender) x.gpos = g[x.p.gender] = (g[x.p.gender] || 0) + 1;
+      if (x.p.category) x.cpos = c[x.p.category] = (c[x.p.category] || 0) + 1;
+    });
+    let list = fin, title = 'Clasificación general', showPos = (x) => x.pos;
+    if (filter.startsWith('g:')) {
+      const gen = filter.slice(2);
+      list = fin.filter(x => x.p.gender === gen);
+      title = gen === 'female' ? 'Clasificación femenina' : 'Clasificación masculina';
+      showPos = (x) => x.gpos;
+    } else if (filter.startsWith('c:')) {
+      const cat = filter.slice(2);
+      list = fin.filter(x => x.p.category === cat);
+      title = `Categoría ${cat}`;
+      showPos = (x) => x.cpos;
+    }
+    const inFilter = (x) => filter.startsWith('g:') ? x.p.gender === filter.slice(2)
+      : filter.startsWith('c:') ? x.p.category === filter.slice(2) : true;
+    const others = rows.filter(x => !x.fin && x.status !== 'DNS' && inFilter(x));
+    const leader = list.length ? list[0].time : null;
+
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 32, bufferPages: true });
+    const safe = (t) => String(t).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w-]+/g, '_').slice(0, 60);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Clasificacion_${safe(event.name)}${race ? '_' + safe(race.name) : ''}.pdf"`);
+    doc.pipe(res);
+
+    const X0 = 32, W = doc.page.width - 64, ROW = 15;
+    const cols = [
+      { k: 'pos', l: 'Pos.', w: 34 }, { k: 'bib', l: 'Dorsal', w: 40 }, { k: 'name', l: 'Nombre', w: 0 },
+      { k: 'team', l: 'Club', w: 220 }, { k: 'cat', l: 'Categoría', w: 130 }, { k: 'cpos', l: 'P.Cat', w: 36 },
+      { k: 'time', l: 'Tiempo', w: 50 }, { k: 'gap', l: 'Dif.', w: 46 },
+    ];
+    cols.find(x => x.k === 'name').w = W - cols.reduce((n, x) => n + x.w, 0);
+    const fit = (txt, w) => {
+      let t = String(txt ?? '');
+      // margen amplio: con tildes pdfkit mide algo menos de lo que pinta y parte la línea
+      if (doc.widthOfString(t) <= w - 12) return t;
+      while (t.length > 1 && doc.widthOfString(t + '…') > w - 12) t = t.slice(0, -1);
+      return t + '…';
+    };
+    const dateStr = event.date ? new Date(event.date + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+    const header = () => {
+      doc.rect(0, 0, doc.page.width, 64).fill('#E8590C');
+      doc.font('Helvetica-Bold').fontSize(15).fillColor('#fff').text(event.name, X0, 16, { width: W, lineBreak: false, ellipsis: true });
+      doc.font('Helvetica').fontSize(9.5).fillColor('#fff')
+        .text([dateStr, event.location, race?.name, title].filter(Boolean).join(' · '), X0, 38, { width: W, lineBreak: false, ellipsis: true });
+      doc.y = 76;
+      const y = doc.y;
+      doc.rect(X0, y, W, ROW).fill('#F1F3F5');
+      let x = X0;
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#333');
+      cols.forEach(col => { doc.text(col.l, x + 3, y + 4, { width: col.w - 6, lineBreak: false }); x += col.w; });
+      doc.y = y + ROW;
+    };
+    const line = (cells, i, red) => {
+      if (doc.y + ROW > doc.page.height - 40) { doc.addPage(); header(); }
+      const y = doc.y;
+      if (i % 2 === 1) doc.rect(X0, y, W, ROW).fill('#FAFAFA');
+      let x = X0;
+      cols.forEach(col => {
+        const bold = col.k === 'pos' || col.k === 'time';
+        doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8)
+          .fillColor(red && col.k === 'pos' ? '#C92A2A' : '#111')
+          .text(fit(cells[col.k], col.w), x + 3, y + 4, { width: col.w - 6, lineBreak: false });
+        x += col.w;
+      });
+      doc.y = y + ROW;
+    };
+    header();
+    if (!list.length && !others.length) {
+      doc.font('Helvetica').fontSize(11).fillColor('#666').text('Todavía no hay resultados.', X0, doc.y + 10);
+    }
+    list.forEach((x, i) => line({
+      pos: showPos(x), bib: x.r.bib, name: `${x.p.firstName || ''} ${x.p.lastName || ''}`.trim(),
+      team: x.p.team || '', cat: x.p.category || '', cpos: x.cpos || '',
+      time: fmt(x.time), gap: i === 0 || leader == null ? '' : '+' + fmt(x.time - leader),
+    }, i));
+    others.forEach((x, i) => line({
+      pos: x.status, bib: x.r.bib, name: `${x.p.firstName || ''} ${x.p.lastName || ''}`.trim(),
+      team: x.p.team || '', cat: x.p.category || '', cpos: '', time: x.status === 'F.T.' ? fmt(x.time) : '', gap: '',
+    }, list.length + i, true));
+
+    // Pie en todas las páginas
+    const range = doc.bufferedPageRange();
+    for (let i = range.start; i < range.start + range.count; i++) {
+      doc.switchToPage(i);
+      doc.page.margins.bottom = 0; // escribir bajo el margen sin que pdfkit añada página
+      doc.font('Helvetica').fontSize(7).fillColor('#888').text(
+        `Cronometraje ViriatoTempo · ${list.length} clasificados · Página ${i - range.start + 1} de ${range.count}`,
+        X0, doc.page.height - 24, { width: W, align: 'center', lineBreak: false });
+    }
+    doc.end();
+  } catch (error) {
+    console.error('PDF clasificación:', error);
+    if (!res.headersSent) res.status(500).json({ message: error.message });
   }
 });
 

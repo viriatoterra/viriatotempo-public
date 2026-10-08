@@ -51,7 +51,9 @@
   .tools { display: flex; gap: 8px; align-items: center; margin: 4px 0 10px; }
   .search { flex: 1; min-width: 0; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
   .search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  .btn { padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13px; white-space: nowrap; }
+  .btn { padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13px; white-space: nowrap;
+    color: var(--ink); text-decoration: none; display: inline-block; }
+  .btn.official { display: block; text-align: center; margin: 0 0 10px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .count { font-size: 12px; color: var(--muted); margin: 0 2px 6px; }
 
   /* Lista */
@@ -117,6 +119,8 @@
   var EVENT_ID = m ? m[1] : (qs.get('event') || '');
   var API = '/api/public';
   var PAGE = 100;
+  // Enlace opcional a la clasificación oficial (Drive, web…): ?pdf=https://…
+  var OFFICIAL_PDF = /^https:\/\//i.test(qs.get('pdf') || '') ? qs.get('pdf') : '';
 
   var color = (qs.get('color') || '').replace(/[^0-9a-fA-F]/g, '');
   if (color.length === 3 || color.length === 6) document.documentElement.style.setProperty('--accent', '#' + color);
@@ -290,8 +294,13 @@
     var h = '<div class="chips">' + filterOptions(base).map(function (o) {
       return '<button class="chip' + (S.filter === o.k ? ' on' : '') + '" data-filter="' + esc(o.k) + '">' + esc(o.l) + '</button>';
     }).join('') + '</div>';
+    var pdfUrl = API + '/results/' + EVENT_ID + '/pdf?' + new URLSearchParams({ raceId: S.race || '', filter: S.filter }).toString();
     h += '<div class="tools"><input id="q" class="search" type="search" placeholder="Buscar nombre, dorsal o club" value="' + esc(S.q) + '">' +
-      '<button class="btn" data-act="csv" title="Descargar esta clasificación (se abre con Excel)">Descargar</button></div>';
+      '<a class="btn" href="' + esc(pdfUrl) + '" target="_blank" rel="noopener" title="PDF de esta clasificación">PDF</a>' +
+      '<button class="btn" data-act="csv" title="Descargar esta clasificación para Excel">Excel</button></div>';
+    if (OFFICIAL_PDF) {
+      h += '<a class="btn official" href="' + esc(OFFICIAL_PDF) + '" target="_blank" rel="noopener">Clasificación oficial (PDF)</a>';
+    }
     var list = applyFilter(base);
     var fin = list.filter(function (r) { return r._fin; });
     h += '<div class="count">' + fin.length + ' clasificados' + (list.length > fin.length ? ' · ' + (list.length - fin.length) + ' sin llegar' : '') + '</div>';

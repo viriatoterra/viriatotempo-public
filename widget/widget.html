@@ -40,6 +40,7 @@
   .tabs button.on { color: var(--ink); background: var(--bg); border-bottom-color: var(--accent); }
 
   .panel { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 12px 12px; padding: 12px; }
+  .panel.solo { padding-top: 14px; }
 
   /* Filtros */
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -121,7 +122,10 @@
   if (color.length === 3 || color.length === 6) document.documentElement.style.setProperty('--accent', '#' + color);
 
   var S = {
-    event: null, results: [], participants: null, tab: qs.get('tab') === 'participantes' ? 'parts' : 'res',
+    event: null, results: [], participants: null,
+    // Por defecto SOLO clasificaciones; la pestaña Participantes se activa con ?participantes=1
+    showParts: qs.get('participantes') === '1',
+    tab: qs.get('participantes') === '1' && qs.get('tab') === 'participantes' ? 'parts' : 'res',
     race: qs.get('race') || '', filter: 'all', q: '', shown: PAGE, updated: null, live: false
   };
 
@@ -176,7 +180,7 @@
           var withRes = races.find(function (r) { return S.results.some(function (x) { return x.raceId === r.id; }); });
           S.race = (withRes || races[0]).id;
         }
-        if (!S.results.length && qs.get('tab') == null) S.tab = 'parts';
+        if (S.showParts && !S.results.length && qs.get('tab') == null) S.tab = 'parts';
       }
       render();
     }).catch(function (e) {
@@ -259,9 +263,11 @@
     h += '<div class="head">' + (ev.image ? '<img alt="" src="' + esc(ev.image) + '" onerror="this.remove()">' : '') +
       '<div><h1>' + esc(ev.name) + (S.live ? '<span class="live">EN DIRECTO</span>' : '') + '</h1>' +
       '<div class="meta">' + esc([dateEs(ev.date), ev.location].filter(Boolean).join(' · ')) + '</div></div></div>';
-    h += '<div class="tabs"><button data-tab="res" class="' + (S.tab === 'res' ? 'on' : '') + '">Resultados</button>' +
-      '<button data-tab="parts" class="' + (S.tab === 'parts' ? 'on' : '') + '">Participantes</button></div>';
-    h += '<div class="panel">';
+    if (S.showParts) {
+      h += '<div class="tabs"><button data-tab="res" class="' + (S.tab === 'res' ? 'on' : '') + '">Resultados</button>' +
+        '<button data-tab="parts" class="' + (S.tab === 'parts' ? 'on' : '') + '">Participantes</button></div>';
+    }
+    h += '<div class="panel' + (S.showParts ? '' : ' solo') + '">';
     if (races.length > 1) {
       h += '<div class="chips races">' + races.map(function (r) {
         return '<button class="chip' + (S.race === r.id ? ' on' : '') + '" data-race="' + esc(r.id) + '">' + esc(r.name) + '</button>';

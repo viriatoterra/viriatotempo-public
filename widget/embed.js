@@ -4,7 +4,8 @@
  *   <script src="https://viriatotempo.onrender.com/widget.js" async></script>
  *
  * Opcionales en el <div>: data-color="e8590c" (color principal), data-race="<id recorrido>",
- * data-tab="participantes", data-live="0" (sin refresco automático).
+ * data-live="0" (sin refresco automático), data-participantes="1" (añade la pestaña
+ * Participantes; por defecto solo se ven las clasificaciones) + data-tab="participantes".
  * Crea un iframe que se ajusta solo a la altura del contenido.
  */
 (function () {
@@ -18,7 +19,7 @@
     if (!ev) { el.textContent = 'ViriatoTempo: falta data-event'; return; }
     el.setAttribute('data-vt-mounted', '1');
     var qs = [];
-    ['color', 'race', 'tab', 'live'].forEach(function (k) {
+    ['color', 'race', 'tab', 'live', 'participantes'].forEach(function (k) {
       var v = el.getAttribute('data-' + k);
       if (v) qs.push(k + '=' + encodeURIComponent(v));
     });

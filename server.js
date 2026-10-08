@@ -622,6 +622,50 @@ function applyOffsetToTime(timeStr, offsetSeconds) {
 }
 
 // GET /api/public/results/:eventId
+// Vueltas (parciales) y pasos intermedios por dorsal — tabla y PDF del widget.
+// Misma lógica que la ficha /:bib: acumulados menos el offset del recorrido.
+function lapSplitHelpers(event) {
+  const eventId = event.id;
+  const offsetOfRace = (rid) => ((event.races || []).find(x => x.id === rid)?.startOffset || 0) * 1000;
+  const lapsByBib = new Map();
+  laps.filter(l => l.eventId === eventId).sort((a, b) => a.lapNumber - b.lapNumber).forEach(l => {
+    (l.data || []).forEach(d => {
+      if (!d.bib || !d.time) return;
+      const key = String(d.bib);
+      if (!lapsByBib.has(key)) lapsByBib.set(key, []);
+      lapsByBib.get(key).push({ n: l.lapNumber, raw: timeToMsHelper(d.time), raceId: d.raceId || null });
+    });
+  });
+  const eventSplitsList = splits.filter(s => s.eventId === eventId).sort((a, b) => a.splitIndex - b.splitIndex);
+  const lapTimesFor = (bib, rid) => {
+    const arr = lapsByBib.get(String(bib));
+    if (!arr) return undefined;
+    const off = offsetOfRace(rid);
+    const out = {}; let prev = null;
+    arr.forEach(x => {
+      if (rid && x.raceId && x.raceId !== rid) return;
+      const cum = Math.max(0, x.raw - off);
+      out[x.n] = msToTimeHelper(prev == null ? cum : Math.max(0, cum - prev));
+      prev = cum;
+    });
+    return Object.keys(out).length ? out : undefined;
+  };
+  const splitTimesFor = (bib, rid) => {
+    if (!eventSplitsList.length) return undefined;
+    const off = offsetOfRace(rid);
+    const cumMode = event.splitDisplayMode === 'cumulative';
+    const out = {};
+    eventSplitsList.forEach(sp => {
+      const e = (sp.data || []).find(d => d.bib === bib);
+      if (!e || !e.time) return;
+      const raw = cumMode ? (e.cumulative || e.time) : e.time;
+      out[sp.splitIndex] = off > 0 ? msToTimeHelper(Math.max(0, timeToMsHelper(raw) - off)) : raw;
+    });
+    return Object.keys(out).length ? out : undefined;
+  };
+  return { lapTimesFor, splitTimesFor };
+}
+
 app.get('/api/public/results/:eventId', (req, res) => {
   try {
     const eventId = parseInt(req.params.eventId);
@@ -634,6 +678,8 @@ app.get('/api/public/results/:eventId', (req, res) => {
     if (raceId) {
       eventResults = eventResults.filter(r => r.raceId === raceId);
     }
+
+    const { lapTimesFor, splitTimesFor } = lapSplitHelpers(event);
 
     let enriched = eventResults.map(r => {
       const p = participants.find(pp => pp.bib === r.bib && pp.eventId === eventId);
@@ -667,6 +713,9 @@ app.get('/api/public/results/:eventId', (req, res) => {
         racePosition: r.chipTime && !r.isOTL ? (r.position || null) : null,
         penalty: r.penalty || null,
         isOTL: r.isOTL || false,
+        startTime: r.startTime || null,
+        lapTimes: lapTimesFor(r.bib, rId),
+        splitTimes: splitTimesFor(r.bib, rId),
         status: !r.chipTime && !r.startTime ? 'DNS' : !r.chipTime ? 'DNF' : 'Finalizado',
       };
     }).filter(Boolean);
@@ -724,7 +773,9 @@ app.get('/api/public/results/:eventId', (req, res) => {
         elevationGain: event.elevationGain || null,
         image: event.image || null,
         rankBy: event.rankBy === 'net' ? 'net' : 'gun',
-        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, elevationGain: r.elevationGain || null, rankingTier: r.rankingTier || null })),
+        races: (event.races || []).map(r => ({ id: r.id, name: r.name, distance: r.distance, elevationGain: r.elevationGain || null, rankingTier: r.rankingTier || null, laps: r.laps || 0, lapNames: r.lapNames || [] })),
+        splits: splits.filter(s => s.eventId === eventId).sort((a, b) => a.splitIndex - b.splitIndex)
+          .map(s => ({ splitIndex: s.splitIndex, name: s.name || `Punto ${s.splitIndex + 1}` })),
       },
       results: enriched,
       total: enriched.length,
@@ -1143,12 +1194,74 @@ app.get('/api/public/results/:eventId/pdf', (req, res) => {
     doc.pipe(res);
 
     const X0 = 32, W = doc.page.width - 64, ROW = 15;
+    // Columnas como la tabla del widget / PDF de la app (solo las que tienen datos)
+    const { lapTimesFor, splitTimesFor } = lapSplitHelpers(event);
+    const all = list.concat(others);
+    all.forEach(x => {
+      const rid = x.r.raceId || x.p.raceId;
+      x.laps = lapTimesFor(x.r.bib, rid) || {};
+      x.splits = splitTimesFor(x.r.bib, rid) || {};
+      x.alt = rankNet ? x.r.chipTime : (x.r.time || null);
+    });
+    const isRun = /run|trail|carrera|atlet|cross|marcha|ruta/i.test(event.type || 'running');
+    const km = race?.distance > 0 ? race.distance : (event.distance || 0);
+    const paceOf = (x) => {
+      if (!x.fin || !km || !x.time) return '';
+      const sec = x.time / 1000;
+      if (isRun) { const pc = Math.round(sec / km); return `${Math.floor(pc / 60)}:${String(pc % 60).padStart(2, '0')}`; }
+      return (km / (sec / 3600)).toFixed(1);
+    };
+    const lapNums = [...new Set(all.flatMap(x => Object.keys(x.laps).map(Number)))].sort((a, b) => a - b);
+    const splitIdx = (splits.filter(sp => sp.eventId === eventId).sort((a, b) => a.splitIndex - b.splitIndex))
+      .filter(sp => all.some(x => x.splits[sp.splitIndex]));
+    const hasAlt = all.some(x => x.fin && x.alt && fmt(tms(x.alt)) !== fmt(x.time - (tms(x.r.penalty) || 0)));
+    const hasPen = all.some(x => x.r.penalty);
+    const hasStart = all.some(x => x.r.startTime && !/^00:00:00/.test(x.r.startTime));
+    const hasPace = !!km;
     const cols = [
-      { k: 'pos', l: 'Pos.', w: 34 }, { k: 'bib', l: 'Dorsal', w: 40 }, { k: 'name', l: 'Nombre', w: 0 },
-      { k: 'team', l: 'Club', w: 220 }, { k: 'cat', l: 'Categoría', w: 130 }, { k: 'cpos', l: 'P.Cat', w: 36 },
-      { k: 'time', l: 'Tiempo', w: 50 }, { k: 'gap', l: 'Dif.', w: 46 },
+      { k: 'pos', l: 'Pos.', w: 30 }, { k: 'bib', l: 'Dorsal', w: 36 }, { k: 'name', l: 'Nombre', flex: 4 },
+      { k: 'team', l: 'Club', flex: 3 }, { k: 'cat', l: 'Categoría', flex: 2 }, { k: 'cpos', l: 'P.Cat', w: 30 },
+      { k: 'gpos', l: 'P.Sexo', w: 36 },
+      { k: 'time', l: rankNet ? 'T. Neto' : 'Tiempo', w: 46 }, { k: 'gap', l: 'Dif.', w: 42 },
     ];
-    cols.find(x => x.k === 'name').w = W - cols.reduce((n, x) => n + x.w, 0);
+    if (hasAlt) cols.push({ k: 'alt', l: rankNet ? 'T. Bruto' : 'T. Neto', w: 46 });
+    if (hasPen) cols.push({ k: 'pen', l: 'Penaliz.', w: 42 });
+    if (hasPace) cols.push({ k: 'pace', l: isRun ? 'Ritmo' : 'km/h', w: 34 });
+    if (hasStart) cols.push({ k: 'start', l: 'Salida', w: 44 });
+    splitIdx.forEach(sp => cols.push({ k: 'split', i: sp.splitIndex, l: sp.name || `Punto ${sp.splitIndex + 1}`, w: 42 }));
+    const lapNames = race?.lapNames || [];
+    lapNums.forEach(n => cols.push({ k: 'lap', n, l: lapNames[n - 1] || `V${n}`, w: 40 }));
+    // Reparto del ancho: fijas primero; si no caben, se estrechan las fijas
+    let fixedW = cols.filter(c => !c.flex).reduce((n, c) => n + c.w, 0);
+    const minFlex = 220;
+    if (W - fixedW < minFlex) {
+      const k = (W - minFlex) / fixedW;
+      cols.forEach(c => { if (!c.flex) c.w = Math.floor(c.w * k); });
+      fixedW = cols.filter(c => !c.flex).reduce((n, c) => n + c.w, 0);
+    }
+    const flexTot = cols.filter(c => c.flex).reduce((n, c) => n + c.flex, 0);
+    cols.forEach(c => { if (c.flex) c.w = Math.floor((W - fixedW) * c.flex / flexTot); });
+    const FS = cols.length > 16 ? 6.5 : cols.length > 13 ? 7 : 8;
+    const cellOf = (c, x, i, isOther) => {
+      switch (c.k) {
+        case 'pos': return isOther ? x.status : showPos(x);
+        case 'bib': return x.r.bib;
+        case 'name': return `${x.p.firstName || ''} ${x.p.lastName || ''}`.trim();
+        case 'team': return x.p.team || '';
+        case 'cat': return x.p.category || '';
+        case 'cpos': return isOther ? '' : (x.cpos || '');
+        case 'gpos': return isOther || !x.gpos ? '' : `${x.gpos} ${x.p.gender === 'female' ? 'F' : 'M'}`;
+        case 'time': return isOther ? (x.status === 'F.T.' ? fmt(x.time) : '') : fmt(x.time);
+        case 'gap': return isOther || i === 0 || leader == null ? '' : '+' + fmt(x.time - leader);
+        case 'alt': return x.fin && x.alt ? fmt(tms(x.alt)) : '';
+        case 'pen': return x.r.penalty ? '+' + fmt(tms(x.r.penalty)) : '';
+        case 'pace': return paceOf(x);
+        case 'start': return x.r.startTime && !/^00:00:00/.test(x.r.startTime) ? String(x.r.startTime).split('.')[0] : '';
+        case 'split': return x.splits[c.i] ? fmt(tms(x.splits[c.i])) : '';
+        case 'lap': return x.laps[c.n] ? fmt(tms(x.laps[c.n])) : '';
+      }
+      return '';
+    };
     const fit = (txt, w) => {
       let t = String(txt ?? '');
       // margen amplio: con tildes pdfkit mide algo menos de lo que pinta y parte la línea
@@ -1166,8 +1279,8 @@ app.get('/api/public/results/:eventId/pdf', (req, res) => {
       const y = doc.y;
       doc.rect(X0, y, W, ROW).fill('#F1F3F5');
       let x = X0;
-      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#333');
-      cols.forEach(col => { doc.text(col.l, x + 3, y + 4, { width: col.w - 6, lineBreak: false }); x += col.w; });
+      doc.font('Helvetica-Bold').fontSize(FS - 0.5).fillColor('#333');
+      cols.forEach(col => { doc.text(fit(col.l, col.w), x + 3, y + 4, { width: col.w - 6, lineBreak: false }); x += col.w; });
       doc.y = y + ROW;
     };
     const line = (cells, i, red) => {
@@ -1176,10 +1289,11 @@ app.get('/api/public/results/:eventId/pdf', (req, res) => {
       if (i % 2 === 1) doc.rect(X0, y, W, ROW).fill('#FAFAFA');
       let x = X0;
       cols.forEach(col => {
+        const val = cells[col.k + (col.i != null ? '_' + col.i : '') + (col.n != null ? '_' + col.n : '')];
         const bold = col.k === 'pos' || col.k === 'time';
-        doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8)
-          .fillColor(red && col.k === 'pos' ? '#C92A2A' : '#111')
-          .text(fit(cells[col.k], col.w), x + 3, y + 4, { width: col.w - 6, lineBreak: false });
+        doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(FS)
+          .fillColor(red && col.k === 'pos' ? '#C92A2A' : col.k === 'lap' ? '#6741D9' : col.k === 'pen' ? '#C92A2A' : '#111')
+          .text(fit(val, col.w), x + 3, y + 4, { width: col.w - 6, lineBreak: false });
         x += col.w;
       });
       doc.y = y + ROW;
@@ -1188,15 +1302,13 @@ app.get('/api/public/results/:eventId/pdf', (req, res) => {
     if (!list.length && !others.length) {
       doc.font('Helvetica').fontSize(11).fillColor('#666').text('Todavía no hay resultados.', X0, doc.y + 10);
     }
-    list.forEach((x, i) => line({
-      pos: showPos(x), bib: x.r.bib, name: `${x.p.firstName || ''} ${x.p.lastName || ''}`.trim(),
-      team: x.p.team || '', cat: x.p.category || '', cpos: x.cpos || '',
-      time: fmt(x.time), gap: i === 0 || leader == null ? '' : '+' + fmt(x.time - leader),
-    }, i));
-    others.forEach((x, i) => line({
-      pos: x.status, bib: x.r.bib, name: `${x.p.firstName || ''} ${x.p.lastName || ''}`.trim(),
-      team: x.p.team || '', cat: x.p.category || '', cpos: '', time: x.status === 'F.T.' ? fmt(x.time) : '', gap: '',
-    }, list.length + i, true));
+    const cellsOf = (x, i, isOther) => {
+      const o = {};
+      cols.forEach(c => { o[c.k + (c.i != null ? '_' + c.i : '') + (c.n != null ? '_' + c.n : '')] = cellOf(c, x, i, isOther); });
+      return o;
+    };
+    list.forEach((x, i) => line(cellsOf(x, i, false), i));
+    others.forEach((x, i) => line(cellsOf(x, i, true), list.length + i, true));
 
     // Pie en todas las páginas
     const range = doc.bufferedPageRange();

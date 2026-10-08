@@ -7,6 +7,7 @@
  * data-live="0" (sin refresco automático), data-participantes="1" (añade la pestaña
  * Participantes; por defecto solo se ven las clasificaciones) + data-tab="participantes",
  * data-pdf="https://drive.google.com/…" (botón "Clasificación oficial (PDF)").
+ * data-vista="tabla" | "lista" (por defecto: tabla en pantallas anchas, lista en móvil).
  * Crea un iframe que se ajusta solo a la altura del contenido.
  */
 (function () {
@@ -20,7 +21,7 @@
     if (!ev) { el.textContent = 'ViriatoTempo: falta data-event'; return; }
     el.setAttribute('data-vt-mounted', '1');
     var qs = [];
-    ['color', 'race', 'tab', 'live', 'participantes', 'pdf'].forEach(function (k) {
+    ['color', 'race', 'tab', 'live', 'participantes', 'pdf', 'vista'].forEach(function (k) {
       var v = el.getAttribute('data-' + k);
       if (v) qs.push(k + '=' + encodeURIComponent(v));
     });

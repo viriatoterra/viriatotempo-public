@@ -68,6 +68,30 @@
   .sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
   .time { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; font-size: 15px; }
   .time .gap { display: block; font-weight: 500; color: var(--muted); font-size: 12px; }
+  /* Vista tabla (mismas columnas que el PDF de la app) */
+  .viewsw { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; float: right; margin-top: -3px; }
+  .viewsw button { border: 0; background: var(--bg); padding: 3px 10px; font-size: 12px; color: var(--muted); }
+  .viewsw button.on { background: var(--ink); color: #fff; }
+  .tw { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 8px; }
+  table.res { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.res th { position: sticky; top: 0; background: var(--soft); text-align: left; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .03em; color: var(--muted); padding: 8px 8px; border-bottom: 1px solid var(--line); }
+  table.res td { padding: 7px 8px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  table.res tr { cursor: pointer; }
+  table.res tr:hover td { background: var(--soft); }
+  table.res .num { text-align: right; }
+  table.res .c-pos { position: sticky; left: 0; z-index: 1; font-weight: 800; color: var(--accent); text-align: center; min-width: 40px; }
+  table.res .c-name { position: sticky; left: 40px; z-index: 1; font-weight: 700; text-transform: uppercase; max-width: 230px;
+    overflow: hidden; text-overflow: ellipsis; box-shadow: 1px 0 0 var(--line); }
+  table.res th.c-pos, table.res th.c-name { z-index: 2; background: var(--soft); }
+  table.res .c-pos.p1 { color: var(--gold); } table.res .c-pos.p2 { color: var(--silver); } table.res .c-pos.p3 { color: var(--bronze); }
+  table.res .c-pos.out { color: #c92a2a; font-size: 11px; }
+  table.res .t-main { font-weight: 800; }
+  table.res td.c-team { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+  table.res td.c-cat { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+  table.res .lap { color: #6741d9; }
+  table.res .pen { color: #c92a2a; }
+  table.res .muted { color: var(--muted); }
   .empty { padding: 28px 10px; text-align: center; color: var(--muted); }
   .more { display: block; width: 100%; margin-top: 10px; }
   .foot { display: flex; justify-content: space-between; gap: 8px; padding: 10px 4px 2px; font-size: 11px; color: var(--muted); }
@@ -130,7 +154,9 @@
     // Por defecto SOLO clasificaciones; la pestaña Participantes se activa con ?participantes=1
     showParts: qs.get('participantes') === '1',
     tab: qs.get('participantes') === '1' && qs.get('tab') === 'participantes' ? 'parts' : 'res',
-    race: qs.get('race') || '', filter: 'all', q: '', shown: PAGE, updated: null, live: false
+    race: qs.get('race') || '', filter: 'all', q: '', shown: PAGE, updated: null, live: false,
+    // Tabla (todas las columnas, como el PDF de la app) o lista compacta (móvil)
+    view: qs.get('vista') === 'lista' || qs.get('vista') === 'tabla' ? qs.get('vista') : (window.innerWidth >= 700 ? 'tabla' : 'lista')
   };
 
   // ── utilidades ──────────────────────────────────────────────
@@ -261,6 +287,73 @@
     return r._pos;
   }
 
+  // ── columnas (como el PDF de resultados de la app; sin datos privados) ──
+  var RUN_TYPES = /run|trail|carrera|atlet|cross|marcha|ruta/i;
+  function paceOf(r) {
+    var race = (S.event.races || []).find(function (x) { return x.id === r.raceId; });
+    var km = race && race.distance > 0 ? race.distance : (S.event.distance || 0);
+    if (!r._fin || !km || !r._time) return '';
+    var sec = r._time / 1000;
+    if (RUN_TYPES.test(S.event.type || 'running')) {
+      var p = Math.round(sec / km); return Math.floor(p / 60) + ':' + ('0' + (p % 60)).slice(-2);
+    }
+    return (km / (sec / 3600)).toFixed(1);
+  }
+  function altTime(r) { // el "otro" tiempo: neto si clasifica por bruto, y al revés
+    return S.event.rankBy === 'net' ? r.chipTimeRaw : r.netTime;
+  }
+  function columnsFor(base) {
+    var race = (S.event.races || []).find(function (x) { return x.id === S.race; });
+    var lapNums = {}, splitIdx = {}, hasStart = false, hasPen = false, hasAlt = false, hasFem = false, hasPace = false;
+    base.forEach(function (r) {
+      if (r.lapTimes) Object.keys(r.lapTimes).forEach(function (n) { lapNums[n] = 1; });
+      if (r.splitTimes) Object.keys(r.splitTimes).forEach(function (i) { splitIdx[i] = 1; });
+      if (r.startTime && !/^00:00:00/.test(r.startTime)) hasStart = true;
+      if (r.penalty) hasPen = true;
+      if (r._fin && altTime(r) && fmt(altTime(r)) !== fmtMs(r._time - (ms(r.penalty) || 0))) hasAlt = true;
+      if (r.gender === 'female') hasFem = true;
+      if (paceOf(r)) hasPace = true;
+    });
+    var cols = [
+      { k: 'pos', l: 'Pos.' }, { k: 'name', l: 'Nombre' }, { k: 'bib', l: 'Dorsal', num: 1 },
+      { k: 'team', l: 'Club' }, { k: 'cat', l: 'Categoría' }, { k: 'cpos', l: 'P.Cat', num: 1 },
+      { k: 'gpos', l: 'P.Sexo', num: 1 }
+    ];
+    // Tiempo y diferencia pronto (se ven sin desplazar); vueltas/pasos al final
+    cols.push({ k: 'time', l: S.event.rankBy === 'net' ? 'T. Neto' : 'Tiempo', num: 1 });
+    cols.push({ k: 'gap', l: 'Dif.', num: 1 });
+    if (hasAlt) cols.push({ k: 'alt', l: S.event.rankBy === 'net' ? 'T. Bruto' : 'T. Neto', num: 1 });
+    if (hasPen) cols.push({ k: 'pen', l: 'Penaliz.', num: 1 });
+    if (hasPace) cols.push({ k: 'pace', l: RUN_TYPES.test(S.event.type || 'running') ? 'Ritmo' : 'km/h', num: 1 });
+    if (hasStart) cols.push({ k: 'start', l: 'Salida', num: 1 });
+    (S.event.splits || []).forEach(function (sp) { if (splitIdx[sp.splitIndex]) cols.push({ k: 'split', i: sp.splitIndex, l: sp.name, num: 1 }); });
+    Object.keys(lapNums).map(Number).sort(function (a, b) { return a - b; }).forEach(function (n) {
+      var nm = race && race.lapNames && race.lapNames[n - 1];
+      cols.push({ k: 'lap', n: n, l: nm || ('V' + n), num: 1 });
+    });
+    return cols;
+  }
+  function cellText(c, r, leader) {
+    switch (c.k) {
+      case 'pos': return posFor(r) || r.status;
+      case 'name': return fullName(r);
+      case 'bib': return r.bib;
+      case 'team': return r.team || '';
+      case 'cat': return r.category || '';
+      case 'cpos': return r._cpos || '';
+      case 'gpos': return r._gpos ? r._gpos + (r.gender === 'female' ? ' F' : r.gender === 'male' ? ' M' : '') : '';
+      case 'start': return r.startTime && !/^00:00:00/.test(r.startTime) ? String(r.startTime).split('.')[0] : '';
+      case 'split': return r.splitTimes && r.splitTimes[c.i] ? fmt(r.splitTimes[c.i]) : '';
+      case 'lap': return r.lapTimes && r.lapTimes[c.n] ? fmt(r.lapTimes[c.n]) : '';
+      case 'time': return r._time != null && r.status !== 'DNF' ? fmtMs(r._time) : '';
+      case 'pen': return r.penalty ? '+' + fmt(r.penalty) : '';
+      case 'alt': return r._fin && altTime(r) ? fmt(altTime(r)) : '';
+      case 'pace': return paceOf(r);
+      case 'gap': return r._fin && leader != null && r._time > leader ? fmtGap(r._time - leader) : '';
+    }
+    return '';
+  }
+
   function render() {
     var ev = S.event, races = ev.races || [];
     var h = '';
@@ -303,9 +396,31 @@
     }
     var list = applyFilter(base);
     var fin = list.filter(function (r) { return r._fin; });
-    h += '<div class="count">' + fin.length + ' clasificados' + (list.length > fin.length ? ' · ' + (list.length - fin.length) + ' sin llegar' : '') + '</div>';
+    h += '<div class="count"><span class="viewsw"><button data-view="lista" class="' + (S.view === 'lista' ? 'on' : '') + '">Lista</button>' +
+      '<button data-view="tabla" class="' + (S.view === 'tabla' ? 'on' : '') + '">Tabla</button></span>' +
+      fin.length + ' clasificados' + (list.length > fin.length ? ' · ' + (list.length - fin.length) + ' sin llegar' : '') + '</div>';
     if (!list.length) return h + '<div class="empty">' + (base.length ? 'Nadie coincide con la búsqueda.' : 'Todavía no hay resultados.') + '</div>';
     var leader = fin.length ? fin[0]._time : null;
+    if (S.view === 'tabla') {
+      var cols = columnsFor(base);
+      h += '<div class="tw"><table class="res"><thead><tr>' + cols.map(function (c) {
+        return '<th class="c-' + c.k + (c.num ? ' num' : '') + '">' + esc(c.l) + '</th>';
+      }).join('') + '</tr></thead><tbody>' + list.slice(0, S.shown).map(function (r) {
+        var p = posFor(r);
+        return '<tr data-bib="' + esc(r.bib) + '">' + cols.map(function (c) {
+          var cls = 'c-' + c.k + (c.num ? ' num' : '');
+          if (c.k === 'pos') cls += p ? (p <= 3 ? ' p' + p : '') : ' out';
+          if (c.k === 'time') cls += ' t-main';
+          if (c.k === 'lap') cls += ' lap';
+          if (c.k === 'pen') cls += ' pen';
+          if (c.k === 'gap' || c.k === 'alt' || c.k === 'start') cls += ' muted';
+          var v = cellText(c, r, leader);
+          return '<td class="' + cls + '"' + (c.k === 'name' || c.k === 'team' ? ' title="' + esc(v) + '"' : '') + '>' + esc(v) + '</td>';
+        }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div>';
+      if (list.length > S.shown) h += '<button class="btn more" data-act="more">Ver más (' + (list.length - S.shown) + ')</button>';
+      return h;
+    }
     h += list.slice(0, S.shown).map(function (r) {
       var p = posFor(r), t = r._time;
       var pc = p ? 'pos' + (p <= 3 ? ' p' + p : '') : 'pos out';
@@ -399,10 +514,12 @@
   function downloadCSV() {
     var list = applyFilter(raceRows(S.results));
     var race = (S.event.races || []).find(function (r) { return r.id === S.race; });
-    var rows = [['Puesto', 'Dorsal', 'Nombre', 'Club', 'Categoría', 'P.Cat', 'Sexo', 'Tiempo', 'Estado']];
+    var cols = columnsFor(raceRows(S.results));
+    var fin = list.filter(function (r) { return r._fin; });
+    var leader = fin.length ? fin[0]._time : null;
+    var rows = [cols.map(function (c) { return c.k === 'pos' ? 'Puesto' : c.l; }).concat(['Estado'])];
     list.forEach(function (r) {
-      rows.push([posFor(r) || '', r.bib, fullName(r), r.team || '', r.category || '', r._cpos || '',
-        r.gender === 'female' ? 'F' : r.gender === 'male' ? 'M' : '', r._fin ? fmtMs(r._time) : '', r.status]);
+      rows.push(cols.map(function (c) { return cellText(c, r, leader); }).concat([r.status === 'Finalizado' ? '' : r.status]));
     });
     var csv = '﻿' + rows.map(function (row) { return row.map(function (v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(';'); }).join('\r\n');
     var a = document.createElement('a');
@@ -413,11 +530,12 @@
 
   // ── eventos ────────────────────────────────────────────────
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('[data-tab],[data-race],[data-filter],[data-act],[data-bib]');
+    var t = e.target.closest('[data-tab],[data-race],[data-filter],[data-act],[data-view],[data-bib]');
     if (!t) { if (e.target.id === 'ov') closeRunner(); return; }
     if (t.dataset.tab) { S.tab = t.dataset.tab; S.shown = PAGE; render(); }
     else if (t.dataset.race !== undefined) { S.race = t.dataset.race; S.filter = 'all'; S.shown = PAGE; render(); }
     else if (t.dataset.filter) { S.filter = t.dataset.filter; S.shown = PAGE; render(); }
+    else if (t.dataset.view) { S.view = t.dataset.view; render(); }
     else if (t.dataset.act === 'more') { S.shown += PAGE; render(); }
     else if (t.dataset.act === 'csv') downloadCSV();
     else if (t.dataset.act === 'close') closeRunner();

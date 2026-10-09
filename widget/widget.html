@@ -53,7 +53,8 @@
   .search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .btn { padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13px; white-space: nowrap;
     color: var(--ink); text-decoration: none; display: inline-block; }
-  .btn.official { display: block; text-align: center; margin: 0 0 10px; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .officials { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+  .btn.official { flex: 1 1 220px; text-align: center; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .count { font-size: 12px; color: var(--muted); margin: 0 2px 6px; }
 
   /* Lista */
@@ -144,7 +145,15 @@
   var API = '/api/public';
   var PAGE = 100;
   // Enlace opcional a la clasificación oficial (Drive, web…): ?pdf=https://…
-  var OFFICIAL_PDF = /^https:\/\//i.test(qs.get('pdf') || '') ? qs.get('pdf') : '';
+  // y/o varios con nombre: ?pdfs=Nombre 1|https://…;Nombre 2|https://…
+  var OFFICIAL_PDFS = [];
+  if (/^https:\/\//i.test(qs.get('pdf') || '')) OFFICIAL_PDFS.push({ label: 'Clasificación oficial (PDF)', url: qs.get('pdf') });
+  (qs.get('pdfs') || '').split(/;|\n/).forEach(function (item) {
+    var i = item.lastIndexOf('|');
+    var label = (i >= 0 ? item.slice(0, i) : '').trim();
+    var url = (i >= 0 ? item.slice(i + 1) : item).trim();
+    if (/^https:\/\//i.test(url)) OFFICIAL_PDFS.push({ label: label || 'Clasificación (PDF)', url: url });
+  });
 
   var color = (qs.get('color') || '').replace(/[^0-9a-fA-F]/g, '');
   if (color.length === 3 || color.length === 6) document.documentElement.style.setProperty('--accent', '#' + color);
@@ -391,8 +400,10 @@
     h += '<div class="tools"><input id="q" class="search" type="search" placeholder="Buscar nombre, dorsal o club" value="' + esc(S.q) + '">' +
       '<a class="btn" href="' + esc(pdfUrl) + '" target="_blank" rel="noopener" title="PDF de esta clasificación">PDF</a>' +
       '<button class="btn" data-act="csv" title="Descargar esta clasificación para Excel">Excel</button></div>';
-    if (OFFICIAL_PDF) {
-      h += '<a class="btn official" href="' + esc(OFFICIAL_PDF) + '" target="_blank" rel="noopener">Clasificación oficial (PDF)</a>';
+    if (OFFICIAL_PDFS.length) {
+      h += '<div class="officials">' + OFFICIAL_PDFS.map(function (d) {
+        return '<a class="btn official" href="' + esc(d.url) + '" target="_blank" rel="noopener">' + esc(d.label) + '</a>';
+      }).join('') + '</div>';
     }
     var list = applyFilter(base);
     var fin = list.filter(function (r) { return r._fin; });
